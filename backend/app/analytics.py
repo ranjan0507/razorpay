@@ -7,10 +7,103 @@ from app.database import SessionLocal
 from app.models import Dispute, Merchant, Transaction
 
 
+def convert_index_to_month_str(start_month_str: str, t: float) -> str:
+    """Convert continuous time index t (where t=0 is start_month_str) to 'YYYY-MM'.
+
+    Convention: Integer t=k corresponds to observation month k. A fractional index
+    t > k indicates crossing occurs after month k, so math.ceil(t) is used for the
+    month offset from the start month.
+    """
+    year, month = map(int, start_month_str.split("-"))
+    month_offset = math.ceil(t) if t > 0 else math.floor(t)
+    total_months = (month - 1) + month_offset
+    new_year = year + (total_months // 12)
+    new_month = (total_months % 12) + 1
+    return f"{new_year:04d}-{new_month:02d}"
+
+
+def get_merchant_dispute_metrics(db: Session, merchant_id: int) -> Dict[str, Any]:
+    """Calculate basic cohort dispute metrics for a merchant (Step 4A).
+
+    Derives metrics strictly from Transaction and Dispute records using the transaction
+    month as the cohort.
+    """
+    # 1. Total transaction count
+    total_transactions = (
+        db.query(func.count(Transaction.id))
+        .filter(Transaction.merchant_id == merchant_id)
+        .scalar()
+        or 0
+    )
+
+    # 2. Total dispute count
+    total_disputes = (
+        db.query(func.count(Dispute.id))
+        .join(Transaction, Dispute.transaction_id == Transaction.id)
+        .filter(Transaction.merchant_id == merchant_id)
+        .scalar()
+        or 0
+    )
+
+    # 3. Overall dispute rate
+    overall_dispute_rate = (
+        (total_disputes / total_transactions) if total_transactions > 0 else 0.0
+    )
+
+    # 4. Monthly transaction counts (grouped by Transaction timestamp month)
+    tx_by_month_raw = (
+        db.query(
+            func.strftime("%Y-%m", Transaction.timestamp).label("month"),
+            func.count(Transaction.id).label("tx_count"),
+        )
+        .filter(Transaction.merchant_id == merchant_id)
+        .group_by("month")
+        .all()
+    )
+    monthly_tx_map = {m: count for m, count in tx_by_month_raw if m}
+
+    # 5. Monthly dispute counts (grouped by Transaction timestamp month cohort)
+    disp_by_tx_month_raw = (
+        db.query(
+            func.strftime("%Y-%m", Transaction.timestamp).label("month"),
+            func.count(Dispute.id).label("disp_count"),
+        )
+        .join(Transaction, Dispute.transaction_id == Transaction.id)
+        .filter(Transaction.merchant_id == merchant_id)
+        .group_by("month")
+        .all()
+    )
+    monthly_disp_map = {m: count for m, count in disp_by_tx_month_raw if m}
+
+    # 6. All transaction months in chronological order
+    all_months = sorted(list(monthly_tx_map.keys()))
+
+    monthly_metrics: List[Dict[str, Any]] = []
+    for month in all_months:
+        tx_count = monthly_tx_map.get(month, 0)
+        disp_count = monthly_disp_map.get(month, 0)
+        disp_rate = (disp_count / tx_count) if tx_count > 0 else 0.0
+
+        monthly_metrics.append({
+            "month": month,
+            "transaction_count": tx_count,
+            "dispute_count": disp_count,
+            "dispute_rate": disp_rate,
+        })
+
+    return {
+        "merchant_id": merchant_id,
+        "total_transactions": total_transactions,
+        "total_disputes": total_disputes,
+        "overall_dispute_rate": overall_dispute_rate,
+        "monthly_metrics": monthly_metrics,
+    }
+
+
 def detect_trend(monthly_metrics: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Calculate deterministic trend metrics using ordinary least-squares linear regression
 
-    and historical vs. recent cohort averages.
+    and historical vs. recent cohort averages (Step 4B).
     """
     n = len(monthly_metrics)
     if n == 0:
@@ -106,7 +199,7 @@ def detect_trend(monthly_metrics: List[Dict[str, Any]]) -> Dict[str, Any]:
 def analyze_segment_drivers(db: Session, merchant_id: int) -> Dict[str, Any]:
     """Analyze single-dimension and 2-way dimension combinations to identify
 
-    the strongest observed drivers of a merchant's dispute volume.
+    the strongest observed drivers of a merchant's dispute volume (Step 4C).
     Strictly counts unique transactions and unique disputed transactions per segment.
     Filters out segments with non-positive excess disputes (excess_disputes <= 0).
     """
@@ -238,7 +331,7 @@ def calculate_risk_score(
     trend: Dict[str, Any],
     drivers: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
-    """Calculate deterministic 0-100 risk score based on 4 components:
+    """Calculate deterministic 0-100 risk score based on 4 components (Step 4D):
 
     - Threshold proximity: 30 points
     - Trend: 30 points
@@ -301,202 +394,289 @@ def calculate_risk_score(
     }
 
 
-def get_merchant_dispute_metrics(db: Session, merchant_id: int) -> Dict[str, Any]:
-    """Calculate deterministic cohort-based dispute metrics for a merchant,
+def forecast_threshold_crossing(
+    risk_threshold: float,
+    monthly_metrics: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Forecast when a merchant's monthly dispute rate will cross their risk threshold
 
-    including trend detection, segment driver analysis, and 0-100 risk scoring.
+    using an OLS linear trend and residual standard deviation window (Step 4E).
+    Time index convention: t = 0, 1, 2, ..., n-1
+    Model: rate(t) = a + b * t
     """
-    merchant = db.query(Merchant).filter(Merchant.id == merchant_id).first()
-    risk_threshold = merchant.risk_threshold if merchant else 0.02
+    n = len(monthly_metrics)
 
-    # 1. Total transaction count
-    total_transactions = (
-        db.query(func.count(Transaction.id))
-        .filter(Transaction.merchant_id == merchant_id)
-        .scalar()
-        or 0
-    )
+    # 1. Invalid threshold
+    if risk_threshold <= 0:
+        return {
+            "status": "invalid_threshold",
+            "current_rate": monthly_metrics[-1]["dispute_rate"] if monthly_metrics else 0.0,
+            "risk_threshold": risk_threshold,
+            "slope": 0.0,
+            "intercept": 0.0,
+            "residual_std": 0.0,
+            "estimated_crossing_index": None,
+            "estimated_crossing_month": None,
+            "forecast_start": None,
+            "forecast_end": None,
+            "number_of_observations": n,
+            "is_highly_uncertain": False,
+            "reason": "Risk threshold must be greater than zero",
+        }
 
-    # 2. Total dispute count
-    total_disputes = (
-        db.query(func.count(Dispute.id))
-        .join(Transaction, Dispute.transaction_id == Transaction.id)
-        .filter(Transaction.merchant_id == merchant_id)
-        .scalar()
-        or 0
-    )
+    # 2. No monthly observations
+    if n == 0:
+        return {
+            "status": "insufficient_data",
+            "current_rate": 0.0,
+            "risk_threshold": risk_threshold,
+            "slope": 0.0,
+            "intercept": 0.0,
+            "residual_std": 0.0,
+            "estimated_crossing_index": None,
+            "estimated_crossing_month": None,
+            "forecast_start": None,
+            "forecast_end": None,
+            "number_of_observations": 0,
+            "is_highly_uncertain": False,
+            "reason": "No monthly observations available",
+        }
 
-    # 3. Overall dispute rate
-    overall_dispute_rate = (
-        (total_disputes / total_transactions) if total_transactions > 0 else 0.0
-    )
+    current_rate = monthly_metrics[-1]["dispute_rate"]
 
-    # 4. Monthly transaction counts (grouped by Transaction timestamp month)
-    tx_by_month_raw = (
-        db.query(
-            func.strftime("%Y-%m", Transaction.timestamp).label("month"),
-            func.count(Transaction.id).label("tx_count"),
-        )
-        .filter(Transaction.merchant_id == merchant_id)
-        .group_by("month")
-        .all()
-    )
-    monthly_tx_map = {m: count for m, count in tx_by_month_raw if m}
+    # 3. Fewer than 3 observations
+    if n < 3:
+        return {
+            "status": "insufficient_data",
+            "current_rate": current_rate,
+            "risk_threshold": risk_threshold,
+            "slope": 0.0,
+            "intercept": 0.0,
+            "residual_std": 0.0,
+            "estimated_crossing_index": None,
+            "estimated_crossing_month": None,
+            "forecast_start": None,
+            "forecast_end": None,
+            "number_of_observations": n,
+            "is_highly_uncertain": False,
+            "reason": "Fewer than 3 monthly observations available for residual estimation",
+        }
 
-    # 5. Monthly dispute counts (grouped by Transaction timestamp month cohort)
-    disp_by_tx_month_raw = (
-        db.query(
-            func.strftime("%Y-%m", Transaction.timestamp).label("month"),
-            func.count(Dispute.id).label("disp_count"),
-        )
-        .join(Transaction, Dispute.transaction_id == Transaction.id)
-        .filter(Transaction.merchant_id == merchant_id)
-        .group_by("month")
-        .all()
-    )
-    monthly_disp_map = {m: count for m, count in disp_by_tx_month_raw if m}
+    # Fit OLS linear trend: rate(t) = a + b * t for t = 0, 1, ..., n-1
+    rates = [m["dispute_rate"] for m in monthly_metrics]
+    t_values = list(range(n))
 
-    # 6. All transaction months in chronological order
-    all_months = sorted(list(monthly_tx_map.keys()))
+    sum_t = sum(t_values)
+    sum_t2 = sum(t ** 2 for t in t_values)
+    sum_r = sum(rates)
+    sum_tr = sum(t * r for t, r in zip(t_values, rates))
 
-    monthly_metrics: List[Dict[str, Any]] = []
-    for month in all_months:
-        tx_count = monthly_tx_map.get(month, 0)
-        disp_count = monthly_disp_map.get(month, 0)
-        disp_rate = (disp_count / tx_count) if tx_count > 0 else 0.0
+    denom = (n * sum_t2) - (sum_t ** 2)
+    b = ((n * sum_tr) - (sum_t * sum_r)) / denom if denom != 0 else 0.0
+    if abs(b) < 1e-12:
+        b = 0.0
 
-        monthly_metrics.append({
-            "month": month,
-            "transaction_count": tx_count,
-            "dispute_count": disp_count,
-            "dispute_rate": disp_rate,
-        })
+    a = (sum_r - b * sum_t) / n
 
-    # 7. Trend Detection
-    trend_facts = detect_trend(monthly_metrics)
+    # Residuals & Residual standard deviation: sqrt(sum(residual_i^2) / (n - 2))
+    residuals = [r - (a + b * t) for t, r in zip(t_values, rates)]
+    residual_variance = sum(res ** 2 for res in residuals) / (n - 2)
+    residual_std = math.sqrt(residual_variance)
 
-    # 8. Segment Driver Analysis
-    driver_facts = analyze_segment_drivers(db, merchant_id)
+    # 4. Check if already breached (Preserve OLS trend facts)
+    if current_rate >= risk_threshold:
+        return {
+            "status": "already_breached",
+            "current_rate": current_rate,
+            "risk_threshold": risk_threshold,
+            "slope": b,
+            "intercept": a,
+            "residual_std": residual_std,
+            "estimated_crossing_index": None,
+            "estimated_crossing_month": monthly_metrics[-1]["month"],
+            "forecast_start": None,
+            "forecast_end": None,
+            "number_of_observations": n,
+            "is_highly_uncertain": False,
+            "reason": "Current monthly dispute rate is already at or above risk threshold",
+        }
 
-    # 9. 0-100 Risk Score Calculation
-    risk_info = calculate_risk_score(
-        risk_threshold=risk_threshold,
-        monthly_metrics=monthly_metrics,
-        trend=trend_facts,
-        drivers=driver_facts["drivers"],
-    )
+    # 5. Non-positive slope
+    if b <= 0:
+        return {
+            "status": "no_breach_projected",
+            "current_rate": current_rate,
+            "risk_threshold": risk_threshold,
+            "slope": b,
+            "intercept": a,
+            "residual_std": residual_std,
+            "estimated_crossing_index": None,
+            "estimated_crossing_month": None,
+            "forecast_start": None,
+            "forecast_end": None,
+            "number_of_observations": n,
+            "is_highly_uncertain": False,
+            "reason": "Dispute rate trend is non-positive; no threshold breach projected",
+        }
+
+    # 6. Projected breach logic
+    t_cross = (risk_threshold - a) / b
+    delta_t = residual_std / b if b > 0 else 0.0
+
+    t_early = t_cross - delta_t
+    t_late = t_cross + delta_t
+
+    # Constrain window to be future-oriented (not earlier than month after latest observed, t = n)
+    t_next_month = float(n)
+    t_early_future = max(t_next_month, t_early)
+    t_late_future = max(t_early_future, t_late)
+
+    start_month_str = monthly_metrics[0]["month"]
+    crossing_month_str = convert_index_to_month_str(start_month_str, t_cross)
+    forecast_start_str = convert_index_to_month_str(start_month_str, t_early_future)
+    forecast_end_str = convert_index_to_month_str(start_month_str, t_late_future)
+
+    # Indicate high uncertainty if crossing point is far in the future (> 24 months beyond latest observation)
+    is_highly_uncertain = (t_cross - (n - 1)) > 24.0
 
     return {
-        "merchant_id": merchant_id,
-        "total_transactions": total_transactions,
-        "total_disputes": total_disputes,
-        "overall_dispute_rate": overall_dispute_rate,
-        "monthly_metrics": monthly_metrics,
-        "trend": trend_facts,
-        "drivers": driver_facts["drivers"],
-        "risk_assessment": risk_info,
+        "status": "projected_breach",
+        "current_rate": current_rate,
+        "risk_threshold": risk_threshold,
+        "slope": b,
+        "intercept": a,
+        "residual_std": residual_std,
+        "estimated_crossing_index": t_cross,
+        "estimated_crossing_month": crossing_month_str,
+        "forecast_start": forecast_start_str,
+        "forecast_end": forecast_end_str,
+        "number_of_observations": n,
+        "is_highly_uncertain": is_highly_uncertain,
     }
 
 
-def verify_risk_score_edge_cases():
-    """Verify edge cases for calculate_risk_score function."""
-    print("\n" + "=" * 70)
-    print("VERIFYING RISK SCORE EDGE CASES")
-    print("=" * 70)
+def run_merchant_analytics(db: Session, merchant_id: int) -> Optional[Dict[str, Any]]:
+    """Single orchestration function for the deterministic analytics pipeline.
 
-    # Edge Case 1: No transactions / no monthly metrics
-    r1 = calculate_risk_score(0.02, [], {"trend_direction": "stable", "trend_strength": 0.0, "trend_persistence": 0.0}, [])
-    print(f"1. No transactions           -> Score: {r1['risk_score']:.1f} (Expected: 0.0)")
-    assert r1["risk_score"] == 0.0
+    Executes in order:
+    1. Loads merchant record and threshold context.
+    2. Calculates monthly cohort dispute metrics (Step 4A).
+    3. Detects trend trajectory (Step 4B).
+    4. Analyzes segment drivers (Step 4C).
+    5. Calculates 0-100 risk score and breakdown (Step 4D).
+    6. Forecasts threshold crossing (Step 4E).
 
-    # Edge Case 2: Risk threshold = 0
-    r2 = calculate_risk_score(0.0, [{"dispute_rate": 0.01}], {"trend_direction": "stable", "trend_strength": 0.0, "trend_persistence": 0.0}, [])
-    print(f"2. Risk threshold = 0        -> Score: {r2['risk_score']:.1f} (Expected: 0.0)")
-    assert r2["breakdown"]["threshold_proximity"] == 0.0
+    Returns structured analytics result, or None if merchant_id is not found.
+    """
+    merchant = db.query(Merchant).filter(Merchant.id == merchant_id).first()
+    if merchant is None:
+        return None
 
-    # Edge Case 3 & 4: Stable / Downward trend
-    r3 = calculate_risk_score(0.02, [{"dispute_rate": 0.007}], {"trend_direction": "stable", "trend_strength": 0.2, "trend_persistence": 0.5}, [])
-    r4 = calculate_risk_score(0.02, [{"dispute_rate": 0.007}], {"trend_direction": "downward", "trend_strength": 0.3, "trend_persistence": 0.0}, [])
-    print(f"3. Stable trend              -> Trend Score: {r3['breakdown']['trend']:.1f} (Expected: 0.0)")
-    print(f"4. Downward trend            -> Trend Score: {r4['breakdown']['trend']:.1f} (Expected: 0.0)")
-    assert r3["breakdown"]["trend"] == 0.0
-    assert r4["breakdown"]["trend"] == 0.0
+    # Step 4A: Basic Cohort Metrics
+    basic_metrics = get_merchant_dispute_metrics(db, merchant_id)
+    monthly_metrics = basic_metrics.get("monthly_metrics", [])
 
-    # Edge Case 5: trend_strength = None
-    r5 = calculate_risk_score(0.02, [{"dispute_rate": 0.01}], {"trend_direction": "upward", "trend_strength": None, "trend_persistence": 0.5}, [])
-    print(f"5. trend_strength = None     -> Trend Score: {r5['breakdown']['trend']:.1f} (Expected: 0.0)")
-    assert r5["breakdown"]["trend"] == 0.0
+    # Step 4B: Trend Detection
+    trend_facts = detect_trend(monthly_metrics)
 
-    # Edge Case 6 & 7: No drivers / Lift <= 1
-    r6 = calculate_risk_score(0.02, [{"dispute_rate": 0.01}], {"trend_direction": "stable", "trend_strength": 0.0, "trend_persistence": 0.0}, [])
-    r7 = calculate_risk_score(0.02, [{"dispute_rate": 0.01}], {"trend_direction": "stable", "trend_strength": 0.0, "trend_persistence": 0.0}, [{"lift": 0.95}])
-    print(f"6. No drivers                -> Segment Score: {r6['breakdown']['segment_anomaly']:.1f} (Expected: 0.0)")
-    print(f"7. Lift <= 1 (0.95)          -> Segment Score: {r7['breakdown']['segment_anomaly']:.1f} (Expected: 0.0)")
-    assert r6["breakdown"]["segment_anomaly"] == 0.0
-    assert r7["breakdown"]["segment_anomaly"] == 0.0
+    # Step 4C: Segment Driver Analysis
+    driver_facts = analyze_segment_drivers(db, merchant_id)
+    drivers = driver_facts.get("drivers", [])
 
-    # Edge Case 8: Moderate high inputs (trend_strength=5.0, lift=10.0) -> Expected: 93.0
-    r8 = calculate_risk_score(0.02, [{"dispute_rate": 0.05}], {"trend_direction": "upward", "trend_strength": 5.0, "trend_persistence": 1.0}, [{"lift": 10.0}])
-    print(f"8. High inputs (strength 5, lift 10) -> Score: {r8['risk_score']:.1f} (Expected: 93.0)")
-    assert math.isclose(r8["risk_score"], 93.0, abs_tol=1e-1)
+    # Step 4D: 0-100 Risk Score Calculation
+    risk_info = calculate_risk_score(
+        risk_threshold=merchant.risk_threshold,
+        monthly_metrics=monthly_metrics,
+        trend=trend_facts,
+        drivers=drivers,
+    )
 
-    # Edge Case 9: Maximum 100/100 score test (extreme high inputs)
-    r9 = calculate_risk_score(0.02, [{"dispute_rate": 0.05}], {"trend_direction": "upward", "trend_strength": 1e9, "trend_persistence": 1.0}, [{"lift": 1e9}])
-    print(f"9. Extreme max inputs (strength 1e9, lift 1e9) -> Score: {r9['risk_score']:.1f} (Expected: 100.0)")
-    assert math.isclose(r9["risk_score"], 100.0, abs_tol=1e-3)
-    assert r9["breakdown"]["threshold_proximity"] == 30.0
-    assert math.isclose(r9["breakdown"]["trend"], 30.0, abs_tol=1e-5)
-    assert r9["breakdown"]["persistence"] == 20.0
-    assert math.isclose(r9["breakdown"]["segment_anomaly"], 20.0, abs_tol=1e-5)
+    # Step 4E: Threshold Crossing Forecast
+    forecast_info = forecast_threshold_crossing(
+        risk_threshold=merchant.risk_threshold,
+        monthly_metrics=monthly_metrics,
+    )
 
-    print("=" * 70 + "\n")
+    current_dispute_rate = (
+        monthly_metrics[-1]["dispute_rate"] if monthly_metrics else 0.0
+    )
+
+    return {
+        "merchant": {
+            "id": merchant.id,
+            "name": merchant.name,
+            "type": merchant.merchant_type,
+            "risk_threshold": merchant.risk_threshold,
+            "alert_threshold": merchant.alert_threshold,
+            "historical_baseline": merchant.historical_baseline,
+        },
+        "overall_metrics": {
+            "total_transactions": basic_metrics["total_transactions"],
+            "total_disputes": basic_metrics["total_disputes"],
+            "overall_dispute_rate": basic_metrics["overall_dispute_rate"],
+            "current_dispute_rate": current_dispute_rate,
+        },
+        "monthly_metrics": monthly_metrics,
+        "trend": trend_facts,
+        "segment_drivers": drivers,
+        "risk_assessment": risk_info,
+        "forecast": forecast_info,
+    }
 
 
 def run_analytics_verification():
-    """Callable verification runner computing metrics, trends, segment drivers, and risk scores."""
+    """Callable verification runner running run_merchant_analytics() for M1–M4 and edge cases."""
     db = SessionLocal()
     try:
-        merchants = db.query(Merchant).order_by(Merchant.id).all()
-        if not merchants:
-            print("No merchants found in database.")
-            return
+        print("\n" + "=" * 75)
+        print("DETERMINISTIC ANALYTICS PIPELINE ORCHESTRATION REPORT")
+        print("=" * 75)
 
-        print("\n" + "=" * 70)
-        print("DETERMINISTIC 0-100 RISK SCORING VERIFICATION REPORT (STEP 4D)")
-        print("=" * 70)
+        for merchant_id in (1, 2, 3, 4):
+            res = run_merchant_analytics(db, merchant_id)
+            assert res is not None, f"Merchant {merchant_id} returned None"
 
-        for merchant in merchants:
-            metrics = get_merchant_dispute_metrics(db, merchant.id)
-            ra = metrics["risk_assessment"]
-            bd = ra["breakdown"]
-            facts = ra["facts"]
+            m = res["merchant"]
+            om = res["overall_metrics"]
+            tr = res["trend"]
+            drivers = res["segment_drivers"]
+            ra = res["risk_assessment"]
+            fc = res["forecast"]
 
-            driver_str = (
-                f"[{' + '.join(facts['strongest_driver_dimensions'])}] -> "
-                f"({', '.join(f'{k}={v}' for k, v in facts['strongest_driver_values'].items())})"
-                if facts['strongest_driver_dimensions']
-                else "None"
-            )
+            top_driver_str = "None"
+            if drivers:
+                d = drivers[0]
+                dims = " + ".join(d["dimensions"])
+                vals = ", ".join(f"{k}={v}" for k, v in d["values"].items())
+                top_driver_str = f"[{dims}] -> ({vals}) (lift: {d['lift']:.2f}x)"
 
-            trend_str_val = f"{facts['trend_strength']:.3f}" if facts['trend_strength'] is not None else "None"
+            crossing_info = "N/A"
+            if fc["status"] == "projected_breach":
+                crossing_info = f"{fc['estimated_crossing_month']} (Window: {fc['forecast_start']} to {fc['forecast_end']})"
+                if fc.get("is_highly_uncertain"):
+                    crossing_info += " [Highly Uncertain]"
+            elif fc["status"] == "already_breached":
+                crossing_info = f"Already Breached ({fc['estimated_crossing_month']})"
 
-            print(f"\nMerchant ID {merchant.id}: {merchant.name} ({merchant.merchant_type})")
-            print("-" * 65)
-            print(f"  Current dispute rate      : {facts['current_rate'] * 100:.3f}%")
-            print(f"  Risk threshold            : {facts['risk_threshold'] * 100:.3f}%")
-            print(f"  Threshold proximity score  : {bd['threshold_proximity']:.2f} / 30.0")
-            print(f"  Trend direction           : {facts['trend_direction'].upper()}")
-            print(f"  Trend strength            : {trend_str_val}")
-            print(f"  Trend score               : {bd['trend']:.2f} / 30.0")
-            print(f"  Trend persistence         : {facts['trend_persistence']:.3f}")
-            print(f"  Persistence score         : {bd['persistence']:.2f} / 20.0")
-            print(f"  Strongest driver          : {driver_str}")
-            print(f"  Strongest driver lift     : {facts['strongest_driver_lift']:.2f}x")
-            print(f"  Segment anomaly score     : {bd['segment_anomaly']:.2f} / 20.0")
-            print("-" * 65)
-            print(f"  FINAL RISK SCORE          : {ra['risk_score']:.2f} / 100.0")
+            print(f"\nMerchant ID {m['id']}: {m['name']} ({m['type']})")
+            print("-" * 70)
+            print(f"  Risk Threshold            : {m['risk_threshold'] * 100:.3f}%")
+            print(f"  Current Dispute Rate      : {om['current_dispute_rate'] * 100:.3f}%")
+            print(f"  Trend Direction           : {tr['trend_direction'].upper()}")
+            print(f"  Monthly OLS Slope (b)     : {tr['slope'] * 100:.4f}% / month")
+            print(f"  Top Segment Driver        : {top_driver_str}")
+            print(f"  Final Risk Score (0-100)  : {ra['risk_score']:.2f} / 100.0")
+            print(f"  Forecast Status           : {fc['status'].upper()}")
+            print(f"  Forecast Crossing Info    : {crossing_info}")
 
-        verify_risk_score_edge_cases()
+        print("\n" + "=" * 75)
+        print("VERIFYING NONEXISTENT MERCHANT HANDLING")
+        print("=" * 75)
+        non_existent = run_merchant_analytics(db, 999)
+        print(f"run_merchant_analytics(db, 999) -> {non_existent} (Expected: None)")
+        assert non_existent is None
+        print("=" * 75 + "\n")
+
     finally:
         db.close()
 
