@@ -21,7 +21,15 @@ class RiskExplanationResponse(BaseModel):
         description="Factual explanation of deterministic threshold forecast status, estimated crossing month, and uncertainty state"
     )
     focus_area: str = Field(
-        description="Concise merchant-facing operational focus area focused on the strongest observed drivers"
+        description="Concise merchant-facing operational focus area directing the merchant to review the observed high-risk segment without inferring ungrounded operational causes like product quality or fulfillment failure"
+    )
+
+class RiskQAResponse(BaseModel):
+    answer: str = Field(
+        description="Concise, merchant-facing answer strictly grounded in the supplied analytics facts, or an explanation that the requested information is not available in the supplied analytics."
+    )
+    grounded: bool = Field(
+        description="True if the question can be answered using ONLY the supplied analytics facts. False if the question requires external knowledge, unsupplied data, Razorpay policies, individual customer/transaction details, or unsupported causal speculation."
     )
 
 def _build_fallback_explanation(analytics_result: Dict[str, Any], reason: str) -> RiskExplanationResponse:
@@ -52,7 +60,7 @@ def _build_fallback_explanation(analytics_result: Dict[str, Any], reason: str) -
         trend_explanation=f"Observed trend direction is classified as '{trend_dir}' across {trend.get('recent_month_count', 0)} cohort months based on linear regression fit.",
         driver_explanation=f"Strongest observed driver is {top_driver_str}.",
         forecast_explanation=f"Deterministic threshold forecast status is '{status_str}' with estimated crossing month '{crossing_str}'.",
-        focus_area=f"Prioritize monitoring high-risk segment {top_driver_str} and track monthly cohort dispute rates against threshold."
+        focus_area=f"Review transactions involving observed high-risk segment {top_driver_str}."
     )
 
 def generate_risk_explanation(
@@ -95,9 +103,15 @@ CRITICAL CONSTRAINTS:
 3. Do NOT calculate or recompute any metrics.
 4. Do NOT invent numbers, dates, causes, probabilities, or other unprovided facts.
 5. Do NOT make causal claims from observational segment data. Use terms like "strongest observed driver" or "associated segment" rather than "caused by" or "root cause".
-6. If the facts do not support a conclusion, state that the information is insufficient.
-7. Do NOT use external information or web searches.
-8. Do NOT make unsupported financial, legal, or operational guarantees.
+6. FOCUS_AREA STRICT RULE:
+   - Identify the observed high-risk segment driver(s) and point the merchant toward reviewing transactions in that segment.
+   - May reference supplied dispute reason(s) if explicitly present in the facts.
+   - Must NOT infer an operational cause that is not explicitly represented in the analytics facts.
+   - Must NOT introduce ungrounded assumptions or speculations such as "product quality", "fulfillment failure", "customer dissatisfaction", "fraud intent", or "payment failure" unless explicitly present in the supplied facts.
+   - Must NOT convert observational correlation/association into causation.
+7. If the facts do not support a conclusion, state that the information is insufficient.
+8. Do NOT use external information or web searches.
+9. Do NOT make unsupported financial, legal, or operational guarantees.
 
 STRUCTURED ANALYTICS FACTS:
 {json.dumps(analytics_result, indent=2)}
@@ -107,7 +121,7 @@ INSTRUCTIONS FOR YOUR RESPONSE FIELDS:
 - trend_explanation: Factual explanation of the observed monthly dispute rate trajectory and trend direction.
 - driver_explanation: Factual breakdown of the strongest observed segment driver(s), including observed lift and excess disputes.
 - forecast_explanation: Factual explanation of the deterministic threshold forecast state, projected breach month (if applicable), and uncertainty state.
-- focus_area: Concise merchant-facing operational focus area focused on the strongest observed driver.
+- focus_area: Concise merchant-facing operational focus area directing the merchant to review the observed high-risk segment without making ungrounded causal or operational assumptions (such as product quality or fulfillment issues).
 """
 
         response = client.models.generate_content(
@@ -133,3 +147,89 @@ INSTRUCTIONS FOR YOUR RESPONSE FIELDS:
         # Secure error handling: do not expose API keys or sensitive error stack traces in return object
         error_msg = f"Gemini generation error: {type(e).__name__}"
         return _build_fallback_explanation(analytics_result, reason=error_msg)
+
+
+def answer_risk_question(
+    analytics_result: Dict[str, Any],
+    question: str,
+    api_key: Optional[str] = None,
+    model_name: Optional[str] = None,
+) -> RiskQAResponse:
+    """
+    Answers a merchant Q&A question based strictly on deterministic analytics facts using Gemini AI.
+
+    Does NOT recompute metrics, invent data, make causal claims, or consult external information.
+    Sets grounded=False if the question cannot be answered strictly from analytics_result.
+    """
+    if not api_key:
+        api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+
+    if not model_name:
+        model_name = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash").strip()
+
+    if not api_key:
+        return RiskQAResponse(
+            answer="Gemini API key is unconfigured. Available DisputeGuard analytics cannot answer questions without AI configuration.",
+            grounded=False,
+        )
+
+    try:
+        from google import genai
+        from google.genai import types
+
+        client = genai.Client(api_key=api_key)
+
+        prompt = f"""
+You are an expert data-grounded AI assistant for DisputeGuard, answering merchant questions about their chargeback risk analytics.
+
+Your task is to answer the merchant's question strictly using ONLY the provided structured analytics facts.
+
+CRITICAL INSTRUCTIONS & STRICT RULES:
+1. Answer ONLY using the supplied analytics facts in the JSON object below.
+2. Do NOT calculate or recompute metrics. Use exact numbers, dates, and names provided in the facts.
+3. Do NOT invent numbers, dates, causes, probabilities, or unprovided facts.
+4. Do NOT make causal claims from observational segment data. Use phrases like "strongest observed driver" or "associated segment" rather than "caused by" or "root cause".
+5. Do NOT use external knowledge, Razorpay company policies, external web searches, or real-world facts outside the analytics (e.g., weather, sports, general economics, chargeback regulations).
+6. IF THE QUESTION CANNOT BE ANSWERED strictly from the supplied analytics facts (e.g. weather queries, Razorpay external policy questions, individual customer/transaction records, or ungrounded operational causes):
+   - Set `grounded` to FALSE (boolean `false`).
+   - In `answer`, clearly state that the requested information is not available in the supplied DisputeGuard analytics facts.
+7. IF THE QUESTION CAN BE ANSWERED strictly from the supplied analytics facts (e.g. current dispute rate, risk threshold, trend direction, historical vs recent change, persistence, strongest segment drivers, lift, excess disputes, risk score components, threshold forecast, forecast uncertainty):
+   - Set `grounded` to TRUE (boolean `true`).
+   - Provide a concise, factual, merchant-facing answer strictly grounded in the facts.
+8. Do NOT provide unsupported operational, financial, legal, or policy advice.
+9. Do NOT expose raw internal code implementation details or database schemas.
+10. Keep answers concise and merchant-facing.
+
+MERCHANT QUESTION:
+"{question}"
+
+STRUCTURED ANALYTICS FACTS:
+{json.dumps(analytics_result, indent=2)}
+"""
+
+        response = client.models.generate_content(
+            model=model_name,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=RiskQAResponse,
+                temperature=0.1,
+            ),
+        )
+
+        if not response or not response.text:
+            return RiskQAResponse(
+                answer="The analytics AI model returned an empty response.",
+                grounded=False,
+            )
+
+        qa_response = RiskQAResponse.model_validate_json(response.text)
+        return qa_response
+
+    except Exception as e:
+        error_msg = f"Unable to answer question due to error: {type(e).__name__}"
+        return RiskQAResponse(
+            answer=error_msg,
+            grounded=False,
+        )
+

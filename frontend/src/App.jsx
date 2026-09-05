@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Shield, ChevronDown, RefreshCw, Activity, Building2, TrendingUp, Layers, Clock, HelpCircle, AlertCircle } from 'lucide-react';
+import { Shield, ChevronDown, RefreshCw, Activity, Building2, TrendingUp, Layers, Clock, HelpCircle, AlertCircle, Sparkles } from 'lucide-react';
 import {
   LineChart,
   Line,
@@ -43,6 +43,17 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
+  // AI Explanation state
+  const [explanationData, setExplanationData] = useState(null);
+  const [explanationLoading, setExplanationLoading] = useState(true);
+  const [explanationError, setExplanationError] = useState(null);
+
+  // Q&A state
+  const [qaQuestion, setQaQuestion] = useState('');
+  const [qaResponse, setQaResponse] = useState(null);
+  const [qaLoading, setQaLoading] = useState(false);
+  const [qaError, setQaError] = useState(null);
+
   const fetchAnalytics = async (merchantId) => {
     setLoading(true);
     setError(null);
@@ -60,8 +71,59 @@ export default function App() {
     }
   };
 
+  const fetchExplanation = async (merchantId) => {
+    setExplanationLoading(true);
+    setExplanationError(null);
+    try {
+      const response = await fetch(`${API_BASE_URL}/merchants/${merchantId}/explanation`);
+      if (!response.ok) {
+        throw new Error(`AI explanation request failed (HTTP ${response.status})`);
+      }
+      const data = await response.json();
+      setExplanationData(data);
+    } catch (err) {
+      setExplanationError('AI explanation unavailable');
+    } finally {
+      setExplanationLoading(false);
+    }
+  };
+
+  const handleAskQuestion = async (overrideQuestion) => {
+    const textToAsk = overrideQuestion !== undefined ? overrideQuestion : qaQuestion;
+    if (!textToAsk || !textToAsk.trim() || qaLoading) return;
+
+    setQaLoading(true);
+    setQaError(null);
+    setQaResponse(null);
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/merchants/${selectedMerchantId}/ask`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ question: textToAsk.trim() }),
+      });
+
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.detail || `Q&A request failed (HTTP ${response.status})`);
+      }
+
+      const data = await response.json();
+      setQaResponse(data);
+    } catch (err) {
+      setQaError(err.message || 'Failed to submit question');
+    } finally {
+      setQaLoading(false);
+    }
+  };
+
   useEffect(() => {
     fetchAnalytics(selectedMerchantId);
+    fetchExplanation(selectedMerchantId);
+    setQaResponse(null);
+    setQaError(null);
   }, [selectedMerchantId]);
 
   // Helper to format dispute rates as standard percentage strings (e.g. 0.835%)
@@ -139,7 +201,10 @@ export default function App() {
             <h3 className="error-title">Unable to Fetch Analytics</h3>
             <p style={{ color: 'var(--text-secondary)', maxWidth: '400px' }}>{error}</p>
             <button
-              onClick={() => fetchAnalytics(selectedMerchantId)}
+              onClick={() => {
+                fetchAnalytics(selectedMerchantId);
+                fetchExplanation(selectedMerchantId);
+              }}
               className="retry-btn"
             >
               <RefreshCw style={{ width: '1rem', height: '1rem' }} /> Retry Request
@@ -228,6 +293,163 @@ export default function App() {
                   </span>
                 </div>
               </div>
+            </div>
+
+            {/* AI Risk Explanation Section */}
+            <div className="ai-section-card">
+              <div className="section-header">
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                  <h2 className="section-title">
+                    <Sparkles style={{ width: '1.25rem', height: '1.25rem', color: '#c084fc' }} />
+                    AI Risk Explanation
+                  </h2>
+                  <span className="ai-badge">Gemini Powered</span>
+                </div>
+              </div>
+
+              {explanationLoading && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '1.5rem 0', color: 'var(--text-secondary)' }}>
+                  <div className="spinner" style={{ width: '1.5rem', height: '1.5rem', borderWidth: '2px' }}></div>
+                  <span>Generating fact-grounded AI risk narrative...</span>
+                </div>
+              )}
+
+              {explanationError && !explanationLoading && (
+                <div className="ai-error-box">
+                  <strong>AI Explanation Unavailable:</strong> {explanationError}
+                </div>
+              )}
+
+              {!explanationLoading && !explanationError && explanationData && (
+                <div className="ai-explanation-grid">
+                  <div className="ai-explanation-box ai-explanation-full">
+                    <span className="ai-explanation-label">Executive Summary</span>
+                    <p className="ai-explanation-text">{explanationData.summary}</p>
+                  </div>
+
+                  <div className="ai-explanation-box">
+                    <span className="ai-explanation-label">Trend Trajectory</span>
+                    <p className="ai-explanation-text">{explanationData.trend_explanation}</p>
+                  </div>
+
+                  <div className="ai-explanation-box">
+                    <span className="ai-explanation-label">Strongest Observed Driver</span>
+                    <p className="ai-explanation-text">{explanationData.driver_explanation}</p>
+                  </div>
+
+                  <div className="ai-explanation-box">
+                    <span className="ai-explanation-label">Threshold Forecast</span>
+                    <p className="ai-explanation-text">{explanationData.forecast_explanation}</p>
+                  </div>
+
+                  <div className="ai-explanation-box ai-focus-box">
+                    <span className="ai-explanation-label" style={{ color: '#c084fc' }}>Merchant Focus Area</span>
+                    <p className="ai-explanation-text" style={{ fontWeight: 500 }}>{explanationData.focus_area}</p>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Ask DisputeGuard Section */}
+            <div className="section-card qa-section-card">
+              <div className="section-header">
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                  <h2 className="section-title">
+                    <HelpCircle style={{ width: '1.25rem', height: '1.25rem', color: 'var(--accent-blue)' }} />
+                    Ask DisputeGuard
+                  </h2>
+                  <span className="type-pill" style={{ background: 'rgba(59, 130, 246, 0.1)', color: '#60a5fa' }}>
+                    Fact-Grounded Q&A
+                  </span>
+                </div>
+              </div>
+
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  handleAskQuestion();
+                }}
+                className="qa-form"
+              >
+                <div className="qa-input-wrapper">
+                  <input
+                    type="text"
+                    value={qaQuestion}
+                    onChange={(e) => setQaQuestion(e.target.value)}
+                    placeholder="Ask a question about your merchant risk analytics (e.g. Why is my risk increasing?)..."
+                    className="qa-input"
+                    disabled={qaLoading}
+                  />
+                  <button
+                    type="submit"
+                    disabled={qaLoading || !qaQuestion.trim()}
+                    className="qa-submit-btn"
+                  >
+                    {qaLoading ? (
+                      <>
+                        <div className="spinner" style={{ width: '1rem', height: '1rem', borderWidth: '2px' }}></div>
+                        <span>Asking...</span>
+                      </>
+                    ) : (
+                      <span>Ask</span>
+                    )}
+                  </button>
+                </div>
+              </form>
+
+              <div className="qa-suggestions">
+                <span className="qa-suggestions-label">Suggested Questions:</span>
+                <div className="qa-chips">
+                  {[
+                    'Why is my risk increasing?',
+                    'Which segment is driving the increase?',
+                    'When am I projected to cross the threshold?',
+                  ].map((q, idx) => (
+                    <button
+                      key={idx}
+                      type="button"
+                      disabled={qaLoading}
+                      onClick={() => {
+                        setQaQuestion(q);
+                        handleAskQuestion(q);
+                      }}
+                      className="qa-chip-btn"
+                    >
+                      {q}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {qaLoading && (
+                <div className="qa-response-box qa-loading-box">
+                  <div className="spinner" style={{ width: '1.25rem', height: '1.25rem', borderWidth: '2px' }}></div>
+                  <span>Consulting DisputeGuard analytics facts...</span>
+                </div>
+              )}
+
+              {qaError && !qaLoading && (
+                <div className="ai-error-box" style={{ marginTop: '1rem' }}>
+                  <strong>Q&A Request Error:</strong> {qaError}
+                </div>
+              )}
+
+              {!qaLoading && !qaError && qaResponse && (
+                <div className="qa-response-box">
+                  <div className="qa-response-header">
+                    {qaResponse.grounded ? (
+                      <span className="grounded-badge grounded-true">
+                        ✓ Grounded in DisputeGuard analytics
+                      </span>
+                    ) : (
+                      <span className="grounded-badge grounded-false">
+                        Information not available in current analytics
+                      </span>
+                    )}
+                  </div>
+                  <p className="qa-response-text">{qaResponse.answer}</p>
+                </div>
+              )}
             </div>
 
             {/* Risk Trajectory Section */}
