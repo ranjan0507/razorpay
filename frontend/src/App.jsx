@@ -75,7 +75,7 @@ export default function App() {
       const data = await response.json();
       setAnalyticsData(data);
     } catch (err) {
-      setError(err.message || 'Error connecting to DisputeGuard backend API');
+      setError(err.message || 'Error connecting to RiskWatch backend API');
     } finally {
       setLoading(false);
     }
@@ -231,7 +231,7 @@ export default function App() {
         <div className="brand">
           <Shield className="brand-icon" />
           <div>
-            <h1 className="brand-title">DisputeGuard</h1>
+            <h1 className="brand-title">RiskWatch</h1>
             <p className="brand-subtitle">Deterministic Chargeback Risk Engine</p>
           </div>
         </div>
@@ -373,7 +373,7 @@ export default function App() {
               <div className="section-header">
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
                   <h2 className="section-title">
-                    <Sparkles style={{ width: '1.25rem', height: '1.25rem', color: '#c084fc' }} />
+                    <Sparkles style={{ width: '1.25rem', height: '1.25rem', color: '#7c3aed' }} />
                     AI Risk Explanation
                   </h2>
                   <span className="ai-badge">Gemini Powered</span>
@@ -416,13 +416,13 @@ export default function App() {
                   </div>
 
                   <div className="ai-explanation-box ai-focus-box">
-                    <span className="ai-explanation-label" style={{ color: '#c084fc' }}>Merchant Focus Area</span>
+                    <span className="ai-explanation-label" style={{ color: '#7c3aed' }}>Merchant Focus Area</span>
                     <p className="ai-explanation-text" style={{ fontWeight: 500 }}>{explanationData.focus_area}</p>
                   </div>
 
                   {explanationData.recommended_action && (
                     <div className="ai-explanation-box ai-recommended-box ai-explanation-full">
-                      <span className="ai-explanation-label" style={{ color: '#60a5fa' }}>Recommended Action</span>
+                      <span className="ai-explanation-label" style={{ color: '#2563eb' }}>Recommended Action</span>
                       <p className="ai-explanation-text" style={{ fontWeight: 500 }}>{explanationData.recommended_action}</p>
                     </div>
                   )}
@@ -430,15 +430,15 @@ export default function App() {
               )}
             </div>
 
-            {/* Ask DisputeGuard Section */}
+            {/* Ask RiskWatch Section */}
             <div className="section-card qa-section-card">
               <div className="section-header">
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
                   <h2 className="section-title">
                     <HelpCircle style={{ width: '1.25rem', height: '1.25rem', color: 'var(--accent-blue)' }} />
-                    Ask DisputeGuard
+                    Ask RiskWatch
                   </h2>
-                  <span className="type-pill" style={{ background: 'rgba(59, 130, 246, 0.1)', color: '#60a5fa' }}>
+                  <span className="type-pill" style={{ background: '#dbeafe', color: '#1d4ed8', border: '1px solid #bfdbfe' }}>
                     Fact-Grounded Q&A
                   </span>
                 </div>
@@ -504,7 +504,7 @@ export default function App() {
               {qaLoading && (
                 <div className="qa-response-box qa-loading-box">
                   <div className="spinner" style={{ width: '1.25rem', height: '1.25rem', borderWidth: '2px' }}></div>
-                  <span>Consulting DisputeGuard analytics facts...</span>
+                  <span>Consulting RiskWatch analytics facts...</span>
                 </div>
               )}
 
@@ -519,7 +519,7 @@ export default function App() {
                   <div className="qa-response-header">
                     {qaResponse.grounded ? (
                       <span className="grounded-badge grounded-true">
-                        ✓ Grounded in DisputeGuard analytics
+                        ✓ Grounded in RiskWatch analytics
                       </span>
                     ) : (
                       <span className="grounded-badge grounded-false">
@@ -541,7 +541,7 @@ export default function App() {
                       <Activity style={{ width: '1.25rem', height: '1.25rem', color: 'var(--accent-blue)' }} />
                       Intervention Impact Evaluation
                     </h2>
-                    <span className="type-pill" style={{ background: 'rgba(59, 130, 246, 0.1)', color: '#60a5fa' }}>
+                    <span className="type-pill" style={{ background: '#dbeafe', color: '#1d4ed8', border: '1px solid #bfdbfe' }}>
                       14-Day Deterministic Window
                     </span>
                   </div>
@@ -570,7 +570,7 @@ export default function App() {
                           {evaluationData.comparison?.evaluation_status === 'no_material_change' && 'No Material Change'}
                           {evaluationData.comparison?.evaluation_status === 'insufficient_data' && 'Insufficient Data'}
                         </span>
-                        <span className="type-pill" style={{ background: 'rgba(139, 92, 246, 0.1)', color: '#c084fc' }}>
+                        <span className="type-pill" style={{ background: '#f3e8ff', color: '#7c3aed', border: '1px solid #d8b4fe' }}>
                           Evaluating intervention target: {evaluationData.target_segment}
                         </span>
                         <span className="type-pill">
@@ -583,7 +583,7 @@ export default function App() {
                     </div>
 
                     {interventionAction && (
-                      <div style={{ marginBottom: '1.25rem', padding: '0.75rem 1rem', background: 'rgba(30, 41, 59, 0.6)', borderRadius: '0.5rem', border: '1px solid var(--border-color)' }}>
+                      <div style={{ marginBottom: '1.25rem', padding: '0.75rem 1rem', background: '#f8fafc', borderRadius: '0.5rem', border: '1px solid var(--border-color)' }}>
                         <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                           Action Recorded:
                         </span>
@@ -617,7 +617,7 @@ export default function App() {
 
                       <div className="forecast-metric-item">
                         <span className="forecast-metric-label">Pre Target Dispute Rate</span>
-                        <span className="forecast-metric-val" style={{ color: '#ef4444' }}>
+                        <span className="forecast-metric-val" style={{ color: '#dc2626' }}>
                           {evaluationData.pre_period?.segment_dispute_rate !== undefined
                             ? `${(evaluationData.pre_period.segment_dispute_rate * 100).toFixed(2)}%`
                             : 'N/A'}
@@ -626,7 +626,7 @@ export default function App() {
 
                       <div className="forecast-metric-item">
                         <span className="forecast-metric-label">Post Target Dispute Rate</span>
-                        <span className="forecast-metric-val" style={{ color: evaluationData.comparison?.evaluation_status === 'improved' ? '#34d399' : 'var(--text-primary)' }}>
+                        <span className="forecast-metric-val" style={{ color: evaluationData.comparison?.evaluation_status === 'improved' ? '#166534' : 'var(--text-primary)' }}>
                           {evaluationData.post_period?.segment_dispute_rate !== undefined
                             ? `${(evaluationData.post_period.segment_dispute_rate * 100).toFixed(2)}%`
                             : 'N/A'}
@@ -662,7 +662,7 @@ export default function App() {
                     {/* AI Intervention Explanation Narrative Sub-Section */}
                     <div style={{ marginTop: '1.5rem', paddingTop: '1.25rem', borderTop: '1px solid var(--border-color)' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
-                        <Sparkles style={{ width: '1.1rem', height: '1.1rem', color: '#c084fc' }} />
+                        <Sparkles style={{ width: '1.1rem', height: '1.1rem', color: '#7c3aed' }} />
                         <span style={{ fontSize: '0.95rem', fontWeight: 600, color: 'var(--text-primary)' }}>
                           AI Intervention Narrative
                         </span>
@@ -730,7 +730,7 @@ export default function App() {
                 <div className="chart-container">
                   <ResponsiveContainer width="100%" height="100%">
                     <LineChart data={chartData} margin={{ top: 15, right: 30, left: 10, bottom: 10 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(255, 255, 255, 0.06)" />
+                      <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
                       <XAxis
                         dataKey="month"
                         stroke="var(--text-muted)"
@@ -763,8 +763,8 @@ export default function App() {
                         dataKey="dispute_rate"
                         stroke="var(--accent-blue)"
                         strokeWidth={3}
-                        dot={{ r: 5, fill: 'var(--accent-blue)', stroke: '#0b0f19', strokeWidth: 2 }}
-                        activeDot={{ r: 7, fill: '#60a5fa' }}
+                        dot={{ r: 5, fill: 'var(--accent-blue)', stroke: '#ffffff', strokeWidth: 2 }}
+                        activeDot={{ r: 7, fill: '#2563eb' }}
                         name="Cohort Dispute Rate"
                       />
                     </LineChart>
@@ -855,7 +855,7 @@ export default function App() {
                           {driver.dominant_dispute_reason && (
                             <div className="driver-metric-item">
                               <span className="driver-metric-label">Dominant Reason</span>
-                              <span className="driver-metric-val" style={{ fontSize: '0.9rem', color: '#60a5fa' }}>
+                              <span className="driver-metric-val" style={{ fontSize: '0.9rem', color: '#2563eb' }}>
                                 {driver.dominant_dispute_reason}
                               </span>
                             </div>

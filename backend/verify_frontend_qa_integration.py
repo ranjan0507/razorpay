@@ -13,7 +13,7 @@ def verify_frontend_qa_integration():
     client = TestClient(app)
 
     print("=" * 80)
-    print("DISPUTEGUARD FRONTEND Q&A INTEGRATION VERIFICATION TEST")
+    print("RISKWATCH FRONTEND Q&A INTEGRATION VERIFICATION TEST")
     print("=" * 80)
 
     # Question 1: Merchant 2 - Why is my risk increasing?

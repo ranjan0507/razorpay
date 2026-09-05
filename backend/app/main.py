@@ -74,7 +74,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="DisputeGuard API",
+    title="RiskWatch API",
     description="AI-powered chargeback risk early-warning system backend",
     version="0.1.0",
     lifespan=lifespan,

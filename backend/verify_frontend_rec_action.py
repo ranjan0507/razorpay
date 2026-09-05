@@ -13,7 +13,7 @@ def verify_frontend_recommended_action():
     client = TestClient(app)
 
     print("=" * 80)
-    print("DISPUTEGUARD FRONTEND RECOMMENDED ACTION INTEGRATION VERIFICATION")
+    print("RISKWATCH FRONTEND RECOMMENDED ACTION INTEGRATION VERIFICATION")
     print("=" * 80)
 
     # 1. Merchant 2 Explanation & Recommended Action

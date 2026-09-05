@@ -17,7 +17,7 @@ from app.ai import (
 
 def run_qa_layer_verification():
     print("=" * 80)
-    print("DISPUTEGUARD GEMINI MERCHANT Q&A LAYER VERIFICATION TEST (MERCHANT 2)")
+    print("RISKWATCH GEMINI MERCHANT Q&A LAYER VERIFICATION TEST (MERCHANT 2)")
     print("=" * 80)
 
     db = SessionLocal()

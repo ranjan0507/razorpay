@@ -6,7 +6,7 @@ from app.database import Base
 
 
 class Merchant(Base):
-    """Represents a merchant monitored by DisputeGuard."""
+    """Represents a merchant monitored by RiskWatch."""
 
     __tablename__ = "merchants"
 

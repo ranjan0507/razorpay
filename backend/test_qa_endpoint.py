@@ -13,7 +13,7 @@ def test_qa_endpoint():
     client = TestClient(app)
 
     print("=" * 80)
-    print("DISPUTEGUARD FASTAPI QA ENDPOINT VERIFICATION TEST")
+    print("RISKWATCH FASTAPI QA ENDPOINT VERIFICATION TEST")
     print("=" * 80)
 
     # 1. Verify Existing Endpoints

@@ -13,7 +13,7 @@ def test_intervention_api():
     client = TestClient(app)
 
     print("=" * 80)
-    print("DISPUTEGUARD INTERVENTION RECORDING & RETRIEVAL API VERIFICATION TEST")
+    print("RISKWATCH INTERVENTION RECORDING & RETRIEVAL API VERIFICATION TEST")
     print("=" * 80)
 
     # 1. Test POST /merchants/2/interventions (Record Merchant 2 Intervention)

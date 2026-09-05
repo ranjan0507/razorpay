@@ -45,7 +45,7 @@ def is_numerical_match(num_val: float, fact_nums: list) -> bool:
 
 def main():
     print("=" * 80)
-    print("DISPUTEGUARD GEMINI AI LAYER STRICT GROUNDING VERIFICATION TEST (MERCHANTS 2 & 4)")
+    print("RISKWATCH GEMINI AI LAYER STRICT GROUNDING VERIFICATION TEST (MERCHANTS 2 & 4)")
     print("=" * 80)
 
     db = SessionLocal()

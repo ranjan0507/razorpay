@@ -76,7 +76,7 @@ def _build_fallback_explanation(analytics_result: Dict[str, Any], reason: str) -
     trend_dir = trend.get("trend_direction", "neutral")
 
     return RiskExplanationResponse(
-        summary=f"DisputeGuard analytics summary for {m_name}: Current monthly dispute rate is {curr_rate:.3f}% against configured threshold of {thresh:.3f}%. ({reason})",
+        summary=f"RiskWatch analytics summary for {m_name}: Current monthly dispute rate is {curr_rate:.3f}% against configured threshold of {thresh:.3f}%. ({reason})",
         trend_explanation=f"Observed trend direction is classified as '{trend_dir}' across {trend.get('recent_month_count', 0)} cohort months based on linear regression fit.",
         driver_explanation=f"Strongest observed driver is {top_driver_str}.",
         forecast_explanation=f"Deterministic threshold forecast status is '{status_str}' with estimated crossing month '{crossing_str}'.",
@@ -115,7 +115,7 @@ def generate_risk_explanation(
         client = genai.Client(api_key=api_key)
 
         prompt = f"""
-You are an expert, data-grounded chargeback risk explanation engine for DisputeGuard.
+You are an expert, data-grounded chargeback risk explanation engine for RiskWatch.
 Your role is purely to EXPLAIN the already-computed deterministic analytics results provided below.
 
 CRITICAL CONSTRAINTS:
@@ -193,7 +193,7 @@ def answer_risk_question(
 
     if not api_key:
         return RiskQAResponse(
-            answer="Gemini API key is unconfigured. Available DisputeGuard analytics cannot answer questions without AI configuration.",
+            answer="Gemini API key is unconfigured. Available RiskWatch analytics cannot answer questions without AI configuration.",
             grounded=False,
         )
 
@@ -204,7 +204,7 @@ def answer_risk_question(
         client = genai.Client(api_key=api_key)
 
         prompt = f"""
-You are an expert data-grounded AI assistant for DisputeGuard, answering merchant questions about their chargeback risk analytics.
+You are an expert data-grounded AI assistant for RiskWatch, answering merchant questions about their chargeback risk analytics.
 
 Your task is to answer the merchant's question strictly using ONLY the provided structured analytics facts.
 
@@ -216,7 +216,7 @@ CRITICAL INSTRUCTIONS & STRICT RULES:
 5. Do NOT use external knowledge, Razorpay company policies, external web searches, or real-world facts outside the analytics (e.g., weather, sports, general economics, chargeback regulations).
 6. IF THE QUESTION CANNOT BE ANSWERED strictly from the supplied analytics facts (e.g. weather queries, Razorpay external policy questions, individual customer/transaction records, or ungrounded operational causes):
    - Set `grounded` to FALSE (boolean `false`).
-   - In `answer`, clearly state that the requested information is not available in the supplied DisputeGuard analytics facts.
+   - In `answer`, clearly state that the requested information is not available in the supplied RiskWatch analytics facts.
 7. IF THE QUESTION CAN BE ANSWERED strictly from the supplied analytics facts (e.g. current dispute rate, risk threshold, trend direction, historical vs recent change, persistence, strongest segment drivers, lift, excess disputes, risk score components, threshold forecast, forecast uncertainty):
    - Set `grounded` to TRUE (boolean `true`).
    - Provide a concise, factual, merchant-facing answer strictly grounded in the facts.
@@ -325,7 +325,7 @@ def generate_intervention_explanation(
         client = genai.Client(api_key=api_key)
 
         prompt = f"""
-You are an expert, data-grounded intervention explanation engine for DisputeGuard.
+You are an expert, data-grounded intervention explanation engine for RiskWatch.
 Your role is purely to EXPLAIN the deterministic intervention evaluation facts provided below.
 
 CRITICAL CONSTRAINTS & STRICT RULES:
