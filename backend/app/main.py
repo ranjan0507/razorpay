@@ -7,12 +7,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field, field_validator
-from app.analytics import run_merchant_analytics
+from app.analytics import run_merchant_analytics, evaluate_intervention
 from app.ai import (
     generate_risk_explanation,
     answer_risk_question,
+    generate_intervention_explanation,
     RiskExplanationResponse,
     RiskQAResponse,
+    InterventionExplanationResponse,
 )
 from app.database import SessionLocal, init_db
 from app.models import Merchant, Intervention
@@ -187,6 +189,60 @@ def get_merchant_interventions_endpoint(
         .all()
     )
     return interventions
+
+
+@app.get("/merchants/{merchant_id}/interventions/{intervention_id}/evaluation")
+def get_merchant_intervention_evaluation_endpoint(
+    merchant_id: int,
+    intervention_id: int,
+    db: Session = Depends(get_db),
+):
+    """Expose deterministic before/after evaluation for a recorded merchant intervention."""
+    merchant = db.query(Merchant).filter(Merchant.id == merchant_id).first()
+    if merchant is None:
+        raise HTTPException(status_code=404, detail="Merchant not found")
+
+    intervention = db.query(Intervention).filter(Intervention.id == intervention_id).first()
+    if intervention is None:
+        raise HTTPException(status_code=404, detail="Intervention not found")
+
+    if intervention.merchant_id != merchant_id:
+        raise HTTPException(status_code=404, detail="Intervention not found for this merchant")
+
+    evaluation = evaluate_intervention(db, intervention_id=intervention_id, window_days=14)
+    if evaluation is None:
+        raise HTTPException(status_code=404, detail="Intervention not found")
+
+    return evaluation
+
+
+@app.get(
+    "/merchants/{merchant_id}/interventions/{intervention_id}/explanation",
+    response_model=InterventionExplanationResponse,
+)
+def get_merchant_intervention_explanation_endpoint(
+    merchant_id: int,
+    intervention_id: int,
+    db: Session = Depends(get_db),
+):
+    """Expose Gemini AI explanation for a recorded merchant intervention evaluation."""
+    merchant = db.query(Merchant).filter(Merchant.id == merchant_id).first()
+    if merchant is None:
+        raise HTTPException(status_code=404, detail="Merchant not found")
+
+    intervention = db.query(Intervention).filter(Intervention.id == intervention_id).first()
+    if intervention is None:
+        raise HTTPException(status_code=404, detail="Intervention not found")
+
+    if intervention.merchant_id != merchant_id:
+        raise HTTPException(status_code=404, detail="Intervention not found for this merchant")
+
+    evaluation = evaluate_intervention(db, intervention_id=intervention_id, window_days=14)
+    if evaluation is None:
+        raise HTTPException(status_code=404, detail="Intervention not found")
+
+    explanation = generate_intervention_explanation(evaluation)
+    return explanation
 
 
 

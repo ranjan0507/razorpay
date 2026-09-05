@@ -1,11 +1,13 @@
 import itertools
 import json
 import math
+import re
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 from app.database import SessionLocal
-from app.models import Dispute, Merchant, Transaction
+from app.models import Dispute, Merchant, Transaction, Intervention
 
 
 def convert_index_to_month_str(start_month_str: str, t: float) -> str:
@@ -655,6 +657,218 @@ def run_merchant_analytics(db: Session, merchant_id: int) -> Optional[Dict[str, 
         "risk_assessment": risk_info,
         "forecast": forecast_info,
     }
+
+
+# Absolute dispute rate change classification tolerance (0.5% = 0.005)
+CLASSIFICATION_TOLERANCE = 0.005
+
+
+def _matches_target_segment(tx: Transaction, target_segment: str) -> bool:
+    """
+    Flexibly checks if a Transaction record belongs to a given target_segment string.
+    Supports formats like:
+      - 'Electronics + Partner_C'
+      - 'Annual + Renewal'
+      - 'product_category=electronics, delivery_partner=Partner_C'
+      - 'electronics'
+    """
+    if not target_segment or not target_segment.strip():
+        return False
+
+    candidate_attrs = [
+        "payment_method",
+        "product_category",
+        "delivery_partner",
+        "geography",
+        "customer_segment",
+        "subscription_type",
+        "transaction_type",
+    ]
+
+    # Collect non-NULL attribute values of tx as lower-case strings
+    tx_values_lower = {}
+    for attr in candidate_attrs:
+        val = getattr(tx, attr, None)
+        if val is not None:
+            tx_values_lower[attr] = str(val).strip().lower()
+
+    all_tx_val_set = set(tx_values_lower.values())
+
+    # Tokens can be separated by '+', ',', or 'and'
+    raw_tokens = re.split(r'\+|\bAND\b|,', target_segment, flags=re.IGNORECASE)
+    tokens = [t.strip().lower() for t in raw_tokens if t.strip()]
+
+    if not tokens:
+        return False
+
+    for token in tokens:
+        if "=" in token:
+            k, v = [part.strip() for part in token.split("=", 1)]
+            if k in tx_values_lower:
+                if tx_values_lower[k] != v:
+                    return False
+            else:
+                return False
+        else:
+            normalized_token = token.replace(" ", "_")
+            matched = any(
+                token == val or normalized_token == val or token.replace("_", " ") == val.replace("_", " ")
+                for val in all_tx_val_set
+            )
+            if not matched:
+                return False
+
+    return True
+
+
+def evaluate_intervention(
+    db: Session,
+    intervention_id: int,
+    window_days: int = 14,
+) -> Optional[Dict[str, Any]]:
+    """
+    Evaluates a recorded merchant intervention using exact transaction timestamps.
+
+    Compares a window_days pre-intervention period [start_date - window_days, start_date)
+    against a window_days post-intervention period [start_date, start_date + window_days).
+
+    Classifies evaluation_status as: 'improved', 'worsened', 'no_material_change', or 'insufficient_data'.
+    Returns structured numerical/data fields only.
+    """
+    intervention = db.query(Intervention).filter(Intervention.id == intervention_id).first()
+    if intervention is None:
+        return None
+
+    merchant_id = intervention.merchant_id
+    start_date = intervention.start_date
+    target_segment = intervention.target_segment
+
+    pre_start = start_date - timedelta(days=window_days)
+    pre_end = start_date
+    post_start = start_date
+    post_end = start_date + timedelta(days=window_days)
+
+    # Fetch database bounds for this merchant
+    min_tx_date = (
+        db.query(func.min(Transaction.timestamp))
+        .filter(Transaction.merchant_id == merchant_id)
+        .scalar()
+    )
+    max_tx_date = (
+        db.query(func.max(Transaction.timestamp))
+        .filter(Transaction.merchant_id == merchant_id)
+        .scalar()
+    )
+
+    # Check window sufficiency: DB timestamps must completely cover pre_start to post_end
+    window_sufficient = (
+        min_tx_date is not None
+        and max_tx_date is not None
+        and min_tx_date <= pre_start
+        and max_tx_date >= post_end
+    )
+
+    def _compute_period_metrics(start_t: datetime, end_t: datetime) -> Dict[str, Any]:
+        tx_rows = (
+            db.query(Transaction)
+            .filter(Transaction.merchant_id == merchant_id)
+            .filter(Transaction.timestamp >= start_t)
+            .filter(Transaction.timestamp < end_t)
+            .all()
+        )
+
+        overall_tx_cnt = len(tx_rows)
+
+        # Distinct disputed transaction IDs in window
+        disputed_tx_ids = (
+            db.query(Dispute.transaction_id)
+            .join(Transaction, Dispute.transaction_id == Transaction.id)
+            .filter(Transaction.merchant_id == merchant_id)
+            .filter(Transaction.timestamp >= start_t)
+            .filter(Transaction.timestamp < end_t)
+            .distinct()
+            .all()
+        )
+        disputed_set = {r[0] for r in disputed_tx_ids if r[0] is not None}
+        overall_disp_cnt = len(disputed_set)
+        overall_rate = (overall_disp_cnt / overall_tx_cnt) if overall_tx_cnt > 0 else 0.0
+
+        # Segment transactions
+        seg_tx_rows = [t for t in tx_rows if _matches_target_segment(t, target_segment)]
+        seg_tx_cnt = len(seg_tx_rows)
+        seg_disp_cnt = sum(1 for t in seg_tx_rows if t.id in disputed_set)
+        seg_rate = (seg_disp_cnt / seg_tx_cnt) if seg_tx_cnt > 0 else 0.0
+        seg_lift = (seg_rate / overall_rate) if overall_rate > 0 else 0.0
+
+        return {
+            "start_time": start_t.isoformat(),
+            "end_time": end_t.isoformat(),
+            "overall_transactions": overall_tx_cnt,
+            "overall_disputes": overall_disp_cnt,
+            "overall_dispute_rate": overall_rate,
+            "segment_transactions": seg_tx_cnt,
+            "segment_disputes": seg_disp_cnt,
+            "segment_dispute_rate": seg_rate,
+            "segment_lift": seg_lift,
+        }
+
+    pre_metrics = _compute_period_metrics(pre_start, pre_end)
+    post_metrics = _compute_period_metrics(post_start, post_end)
+
+    # Check target segment sample size requirement (at least 30 tx per period)
+    sample_sufficient = (
+        pre_metrics["segment_transactions"] >= 30
+        and post_metrics["segment_transactions"] >= 30
+    )
+
+    is_sufficient_data = window_sufficient and sample_sufficient
+
+    if not is_sufficient_data:
+        return {
+            "intervention_id": intervention_id,
+            "merchant_id": merchant_id,
+            "target_segment": target_segment,
+            "start_date": start_date.isoformat(),
+            "window_days": window_days,
+            "pre_period": pre_metrics,
+            "post_period": post_metrics,
+            "comparison": {
+                "absolute_change": None,
+                "relative_change": None,
+                "evaluation_status": "insufficient_data",
+                "is_sufficient_data": False,
+            },
+        }
+
+    pre_seg_rate = pre_metrics["segment_dispute_rate"]
+    post_seg_rate = post_metrics["segment_dispute_rate"]
+
+    abs_change = post_seg_rate - pre_seg_rate
+    rel_change = (abs_change / pre_seg_rate) if pre_seg_rate > 0 else None
+
+    if abs_change < -CLASSIFICATION_TOLERANCE:
+        status = "improved"
+    elif abs_change > CLASSIFICATION_TOLERANCE:
+        status = "worsened"
+    else:
+        status = "no_material_change"
+
+    return {
+        "intervention_id": intervention_id,
+        "merchant_id": merchant_id,
+        "target_segment": target_segment,
+        "start_date": start_date.isoformat(),
+        "window_days": window_days,
+        "pre_period": pre_metrics,
+        "post_period": post_metrics,
+        "comparison": {
+            "absolute_change": abs_change,
+            "relative_change": rel_change,
+            "evaluation_status": status,
+            "is_sufficient_data": True,
+        },
+    }
+
 
 
 def run_analytics_verification():

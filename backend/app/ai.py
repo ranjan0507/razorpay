@@ -35,6 +35,20 @@ class RiskQAResponse(BaseModel):
         description="True if the question can be answered using ONLY the supplied analytics facts. False if the question requires external knowledge, unsupplied data, Razorpay policies, individual customer/transaction details, or unsupported causal speculation."
     )
 
+class InterventionExplanationResponse(BaseModel):
+    summary: str = Field(
+        description="High-level factual summary of the intervention target segment, evaluation window, and deterministic outcome classification."
+    )
+    pre_vs_post_explanation: str = Field(
+        description="Factual explanation of target-segment dispute rates observed before vs after the intervention start date."
+    )
+    change_explanation: str = Field(
+        description="Factual explanation of absolute and relative rate changes and how they correspond to the deterministic outcome classification (improved, worsened, no_material_change, or insufficient_data)."
+    )
+    data_sufficiency_note: str = Field(
+        description="Factual statement regarding whether data sufficiency requirements (timestamp window coverage and sample size thresholds) were satisfied."
+    )
+
 def _build_fallback_explanation(analytics_result: Dict[str, Any], reason: str) -> RiskExplanationResponse:
     """Provides a deterministic, fact-grounded fallback explanation when Gemini API is unavailable or unconfigured."""
     merchant = analytics_result.get("merchant", {})
@@ -242,4 +256,121 @@ STRUCTURED ANALYTICS FACTS:
             answer=error_msg,
             grounded=False,
         )
+
+
+def _build_fallback_intervention_explanation(
+    evaluation_result: Dict[str, Any], reason: str
+) -> InterventionExplanationResponse:
+    """Provides a deterministic, fact-grounded fallback explanation for intervention evaluation when Gemini API is unavailable or unconfigured."""
+    target_seg = evaluation_result.get("target_segment", "Target Segment")
+    window_days = evaluation_result.get("window_days", 14)
+    pre = evaluation_result.get("pre_period", {})
+    post = evaluation_result.get("post_period", {})
+    comp = evaluation_result.get("comparison", {})
+
+    status = comp.get("evaluation_status", "insufficient_data")
+    is_sufficient = comp.get("is_sufficient_data", False)
+    abs_chg = comp.get("absolute_change")
+    rel_chg = comp.get("relative_change")
+
+    pre_rate_pct = pre.get("segment_dispute_rate", 0) * 100
+    post_rate_pct = post.get("segment_dispute_rate", 0) * 100
+
+    if not is_sufficient:
+        return InterventionExplanationResponse(
+            summary=f"Intervention evaluation for segment '{target_seg}' over a {window_days}-day window is classified as '{status}'. ({reason})",
+            pre_vs_post_explanation=f"Pre-intervention segment dispute rate was {pre_rate_pct:.2f}% ({pre.get('segment_disputes', 0)} disputes / {pre.get('segment_transactions', 0)} tx); post-intervention segment dispute rate was {post_rate_pct:.2f}% ({post.get('segment_disputes', 0)} disputes / {post.get('segment_transactions', 0)} tx).",
+            change_explanation="Data requirements were not met, so comparison values cannot be reliably evaluated.",
+            data_sufficiency_note=f"Data sufficiency check failed. Full {window_days}-day timestamp window or minimum sample size requirement (30 tx per period) was not satisfied.",
+        )
+
+    abs_str = f"{abs_chg * 100:.2f} percentage points" if abs_chg is not None else "N/A"
+    rel_str = f"{rel_chg * 100:.2f}%" if rel_chg is not None else "N/A"
+
+    return InterventionExplanationResponse(
+        summary=f"Intervention evaluation for target segment '{target_seg}' over a {window_days}-day window is classified as '{status}'. ({reason})",
+        pre_vs_post_explanation=f"In the pre-intervention period, the target-segment dispute rate was {pre_rate_pct:.2f}%. In the post-intervention period following the intervention start date, the target-segment dispute rate was {post_rate_pct:.2f}%.",
+        change_explanation=f"Following the intervention, the target-segment dispute rate changed by {abs_str} ({rel_str} relative change), resulting in an evaluation status of '{status}'.",
+        data_sufficiency_note=f"Data sufficiency verified: both pre and post periods satisfied the {window_days}-day timestamp coverage and minimum sample size thresholds.",
+    )
+
+
+def generate_intervention_explanation(
+    evaluation_result: Dict[str, Any],
+    api_key: Optional[str] = None,
+    model_name: Optional[str] = None,
+) -> InterventionExplanationResponse:
+    """
+    Generates a structured, fact-grounded explanation of deterministic intervention evaluation results using Gemini AI.
+
+    Does NOT compute metrics, alter data, invent operational causes, or claim causality.
+    Strictly explains the provided evaluation_result object.
+    """
+    if not api_key:
+        api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+
+    if not model_name:
+        model_name = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash").strip()
+
+    if not api_key:
+        return _build_fallback_intervention_explanation(
+            evaluation_result,
+            reason="Gemini API key is unconfigured. Set GEMINI_API_KEY in backend/.env to enable AI narrative generation.",
+        )
+
+    try:
+        from google import genai
+        from google.genai import types
+
+        client = genai.Client(api_key=api_key)
+
+        prompt = f"""
+You are an expert, data-grounded intervention explanation engine for DisputeGuard.
+Your role is purely to EXPLAIN the deterministic intervention evaluation facts provided below.
+
+CRITICAL CONSTRAINTS & STRICT RULES:
+1. EXPLANATION LAYER ONLY: You are an explanation layer, NOT a calculation engine. Do NOT calculate or recompute any metrics.
+2. STRICT GROUNDING: Use ONLY the supplied facts in the JSON object below. Use exact numbers, dates, rates, and target segments provided.
+3. NO INVENTIONS: Do NOT invent numbers, dates, causes, probabilities, or unprovided facts.
+4. NO CAUSAL CLAIMS: Do NOT claim that the intervention "caused", "produced", "led to", or "resulted in" the observed change.
+5. OBSERVATIONAL LANGUAGE: Use observational phrasing such as "after the intervention", "following the intervention start date", or "in the post-intervention period".
+6. NO UNGROUNDED OPERATIONAL INFERENCES: Do NOT infer why the intervention worked or failed (e.g. do NOT claim "partner delivery quality improved", "fulfillment process was fixed", or "customer support resolved issues").
+7. CLASSIFICATION ALIGNMENT: Conform strictly to the deterministic evaluation_status (improved, worsened, no_material_change, or insufficient_data).
+8. INSUFFICIENT DATA: If evaluation_status is "insufficient_data" or is_sufficient_data is false, state clearly that impact cannot be reliably evaluated due to missing data window or sample size constraints.
+9. NO EXTERNAL INFORMATION: Do NOT use external knowledge, policy assumptions, or web searches.
+10. NO UNSUPPORTED ADVICE: Do NOT provide operational or financial guarantees or advice.
+
+STRUCTURED INTERVENTION EVALUATION FACTS:
+{json.dumps(evaluation_result, indent=2)}
+
+INSTRUCTIONS FOR YOUR RESPONSE FIELDS:
+- summary: High-level factual summary of the intervention target segment, evaluation window, and deterministic classification status.
+- pre_vs_post_explanation: Factual explanation comparing the observed target-segment dispute rates before vs after the intervention start date using observational language.
+- change_explanation: Factual explanation of absolute rate change and relative rate change, matching the evaluation_status classification without claiming causality.
+- data_sufficiency_note: Factual statement confirming whether data sufficiency criteria (14-day window coverage and sample size thresholds) were met.
+"""
+
+        response = client.models.generate_content(
+            model=model_name,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=InterventionExplanationResponse,
+                temperature=0.2,
+            ),
+        )
+
+        if not response or not response.text:
+            return _build_fallback_intervention_explanation(
+                evaluation_result,
+                reason="Gemini model returned empty response.",
+            )
+
+        explanation = InterventionExplanationResponse.model_validate_json(response.text)
+        return explanation
+
+    except Exception as e:
+        error_msg = f"Gemini generation error: {type(e).__name__}"
+        return _build_fallback_intervention_explanation(evaluation_result, reason=error_msg)
+
 

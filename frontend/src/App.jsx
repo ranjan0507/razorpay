@@ -54,6 +54,15 @@ export default function App() {
   const [qaLoading, setQaLoading] = useState(false);
   const [qaError, setQaError] = useState(null);
 
+  // Intervention evaluation & AI explanation state
+  const [evaluationData, setEvaluationData] = useState(null);
+  const [evaluationLoading, setEvaluationLoading] = useState(false);
+  const [evaluationError, setEvaluationError] = useState(null);
+
+  const [interventionExplanationData, setInterventionExplanationData] = useState(null);
+  const [interventionExplanationLoading, setInterventionExplanationLoading] = useState(false);
+  const [interventionExplanationError, setInterventionExplanationError] = useState(null);
+
   const fetchAnalytics = async (merchantId) => {
     setLoading(true);
     setError(null);
@@ -85,6 +94,66 @@ export default function App() {
       setExplanationError('AI explanation unavailable');
     } finally {
       setExplanationLoading(false);
+    }
+  };
+
+  const fetchInterventionData = async (merchantId) => {
+    setEvaluationLoading(true);
+    setEvaluationError(null);
+    setEvaluationData(null);
+
+    setInterventionExplanationLoading(false);
+    setInterventionExplanationError(null);
+    setInterventionExplanationData(null);
+
+    try {
+      const listResp = await fetch(`${API_BASE_URL}/merchants/${merchantId}/interventions`);
+      if (!listResp.ok) {
+        throw new Error(`Failed to fetch merchant interventions (HTTP ${listResp.status})`);
+      }
+      const interventions = await listResp.json();
+
+      if (!interventions || interventions.length === 0) {
+        setEvaluationLoading(false);
+        return;
+      }
+
+      const targetInterventionId = interventions[0].id;
+
+      // 1. Fetch deterministic evaluation
+      try {
+        const evalResp = await fetch(`${API_BASE_URL}/merchants/${merchantId}/interventions/${targetInterventionId}/evaluation`);
+        if (!evalResp.ok) {
+          throw new Error(`Intervention evaluation request failed (HTTP ${evalResp.status})`);
+        }
+        const evalData = await evalResp.json();
+        setEvaluationData(evalData);
+      } catch (evalErr) {
+        setEvaluationError(evalErr.message || 'Intervention evaluation unavailable');
+        setEvaluationLoading(false);
+        return;
+      } finally {
+        setEvaluationLoading(false);
+      }
+
+      // 2. Fetch AI intervention explanation
+      setInterventionExplanationLoading(true);
+      setInterventionExplanationError(null);
+      try {
+        const expResp = await fetch(`${API_BASE_URL}/merchants/${merchantId}/interventions/${targetInterventionId}/explanation`);
+        if (!expResp.ok) {
+          throw new Error(`AI intervention explanation request failed (HTTP ${expResp.status})`);
+        }
+        const expData = await expResp.json();
+        setInterventionExplanationData(expData);
+      } catch (expErr) {
+        setInterventionExplanationError('AI intervention explanation unavailable');
+      } finally {
+        setInterventionExplanationLoading(false);
+      }
+    } catch (err) {
+      setEvaluationError(err.message || 'Intervention data unavailable');
+      setEvaluationLoading(false);
     }
   };
 
@@ -122,6 +191,7 @@ export default function App() {
   useEffect(() => {
     fetchAnalytics(selectedMerchantId);
     fetchExplanation(selectedMerchantId);
+    fetchInterventionData(selectedMerchantId);
     setQaResponse(null);
     setQaError(null);
   }, [selectedMerchantId]);
@@ -458,6 +528,173 @@ export default function App() {
                 </div>
               )}
             </div>
+
+            {/* Deterministic Intervention Evaluation Section */}
+            {(evaluationLoading || evaluationError || evaluationData) && (
+              <div className="section-card">
+                <div className="section-header">
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                    <h2 className="section-title">
+                      <Activity style={{ width: '1.25rem', height: '1.25rem', color: 'var(--accent-blue)' }} />
+                      Intervention Impact Evaluation
+                    </h2>
+                    <span className="type-pill" style={{ background: 'rgba(59, 130, 246, 0.1)', color: '#60a5fa' }}>
+                      14-Day Deterministic Window
+                    </span>
+                  </div>
+                </div>
+
+                {evaluationLoading && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '1.5rem 0', color: 'var(--text-secondary)' }}>
+                    <div className="spinner" style={{ width: '1.5rem', height: '1.5rem', borderWidth: '2px' }}></div>
+                    <span>Evaluating intervention performance window...</span>
+                  </div>
+                )}
+
+                {evaluationError && !evaluationLoading && (
+                  <div className="ai-error-box">
+                    <strong>Intervention Evaluation Error:</strong> {evaluationError}
+                  </div>
+                )}
+
+                {!evaluationLoading && !evaluationError && evaluationData && (
+                  <div className="forecast-card">
+                    <div className="forecast-header-row" style={{ marginBottom: '1.25rem' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+                        <span className={`eval-status-badge ${evaluationData.comparison?.evaluation_status}`}>
+                          {evaluationData.comparison?.evaluation_status === 'improved' && 'Improved'}
+                          {evaluationData.comparison?.evaluation_status === 'worsened' && 'Worsened'}
+                          {evaluationData.comparison?.evaluation_status === 'no_material_change' && 'No Material Change'}
+                          {evaluationData.comparison?.evaluation_status === 'insufficient_data' && 'Insufficient Data'}
+                        </span>
+                        <span className="type-pill">
+                          Data Sufficient: {evaluationData.comparison?.is_sufficient_data ? 'yes' : 'no'}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                        Target Segment: <strong style={{ color: 'var(--text-primary)' }}>{evaluationData.target_segment}</strong>
+                      </div>
+                    </div>
+
+                    <div className="forecast-grid">
+                      <div className="forecast-metric-item">
+                        <span className="forecast-metric-label">Target Segment</span>
+                        <span className="forecast-metric-val" style={{ fontSize: '1.05rem' }}>
+                          {evaluationData.target_segment}
+                        </span>
+                      </div>
+
+                      <div className="forecast-metric-item">
+                        <span className="forecast-metric-label">Pre-Period Window</span>
+                        <span className="forecast-metric-val" style={{ fontSize: '0.95rem' }}>
+                          {evaluationData.pre_period?.start_time ? evaluationData.pre_period.start_time.split('T')[0] : 'N/A'} → {evaluationData.pre_period?.end_time ? evaluationData.pre_period.end_time.split('T')[0] : 'N/A'}
+                        </span>
+                      </div>
+
+                      <div className="forecast-metric-item">
+                        <span className="forecast-metric-label">Post-Period Window</span>
+                        <span className="forecast-metric-val" style={{ fontSize: '0.95rem' }}>
+                          {evaluationData.post_period?.start_time ? evaluationData.post_period.start_time.split('T')[0] : 'N/A'} → {evaluationData.post_period?.end_time ? evaluationData.post_period.end_time.split('T')[0] : 'N/A'}
+                        </span>
+                      </div>
+
+                      <div className="forecast-metric-item">
+                        <span className="forecast-metric-label">Pre Target Dispute Rate</span>
+                        <span className="forecast-metric-val" style={{ color: '#ef4444' }}>
+                          {evaluationData.pre_period?.segment_dispute_rate !== undefined
+                            ? `${(evaluationData.pre_period.segment_dispute_rate * 100).toFixed(2)}%`
+                            : 'N/A'}
+                        </span>
+                      </div>
+
+                      <div className="forecast-metric-item">
+                        <span className="forecast-metric-label">Post Target Dispute Rate</span>
+                        <span className="forecast-metric-val" style={{ color: evaluationData.comparison?.evaluation_status === 'improved' ? '#34d399' : 'var(--text-primary)' }}>
+                          {evaluationData.post_period?.segment_dispute_rate !== undefined
+                            ? `${(evaluationData.post_period.segment_dispute_rate * 100).toFixed(2)}%`
+                            : 'N/A'}
+                        </span>
+                      </div>
+
+                      <div className="forecast-metric-item">
+                        <span className="forecast-metric-label">Absolute Rate Change</span>
+                        <span className="forecast-metric-val">
+                          {evaluationData.comparison?.absolute_change !== null && evaluationData.comparison?.absolute_change !== undefined
+                            ? `${(evaluationData.comparison.absolute_change * 100).toFixed(2)} percentage points`
+                            : 'N/A'}
+                        </span>
+                      </div>
+
+                      <div className="forecast-metric-item">
+                        <span className="forecast-metric-label">Relative Rate Change</span>
+                        <span className="forecast-metric-val">
+                          {evaluationData.comparison?.relative_change !== null && evaluationData.comparison?.relative_change !== undefined
+                            ? `${(evaluationData.comparison.relative_change * 100).toFixed(2)}%`
+                            : 'N/A'}
+                        </span>
+                      </div>
+
+                      <div className="forecast-metric-item">
+                        <span className="forecast-metric-label">Data Sufficiency</span>
+                        <span className="forecast-metric-val">
+                          {evaluationData.comparison?.is_sufficient_data ? 'yes' : 'no'}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* AI Intervention Explanation Narrative Sub-Section */}
+                    <div style={{ marginTop: '1.5rem', paddingTop: '1.25rem', borderTop: '1px solid var(--border-color)' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
+                        <Sparkles style={{ width: '1.1rem', height: '1.1rem', color: '#c084fc' }} />
+                        <span style={{ fontSize: '0.95rem', fontWeight: 600, color: 'var(--text-primary)' }}>
+                          AI Intervention Narrative
+                        </span>
+                        <span className="ai-badge" style={{ fontSize: '0.7rem', padding: '0.15rem 0.5rem' }}>
+                          Fact-Grounded Explanation
+                        </span>
+                      </div>
+
+                      {interventionExplanationLoading && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '1rem 0', color: 'var(--text-secondary)' }}>
+                          <div className="spinner" style={{ width: '1.25rem', height: '1.25rem', borderWidth: '2px' }}></div>
+                          <span>Generating fact-grounded intervention explanation...</span>
+                        </div>
+                      )}
+
+                      {interventionExplanationError && !interventionExplanationLoading && (
+                        <div className="ai-error-box" style={{ marginTop: '0.5rem' }}>
+                          <strong>AI Narrative Unavailable:</strong> {interventionExplanationError}
+                        </div>
+                      )}
+
+                      {!interventionExplanationLoading && !interventionExplanationError && interventionExplanationData && (
+                        <div className="ai-explanation-grid">
+                          <div className="ai-explanation-box ai-explanation-full">
+                            <span className="ai-explanation-label">Executive Overview</span>
+                            <p className="ai-explanation-text">{interventionExplanationData.summary}</p>
+                          </div>
+
+                          <div className="ai-explanation-box">
+                            <span className="ai-explanation-label">Pre vs. Post Comparison</span>
+                            <p className="ai-explanation-text">{interventionExplanationData.pre_vs_post_explanation}</p>
+                          </div>
+
+                          <div className="ai-explanation-box">
+                            <span className="ai-explanation-label">Rate Change & Classification</span>
+                            <p className="ai-explanation-text">{interventionExplanationData.change_explanation}</p>
+                          </div>
+
+                          <div className="ai-explanation-box ai-explanation-full">
+                            <span className="ai-explanation-label">Data Sufficiency Assessment</span>
+                            <p className="ai-explanation-text">{interventionExplanationData.data_sufficiency_note}</p>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Risk Trajectory Section */}
             <div className="section-card">
