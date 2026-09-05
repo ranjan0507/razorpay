@@ -1,3 +1,5 @@
+from datetime import datetime
+from typing import List
 from pathlib import Path
 from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, HTTPException
@@ -13,6 +15,7 @@ from app.ai import (
     RiskQAResponse,
 )
 from app.database import SessionLocal, init_db
+from app.models import Merchant, Intervention
 
 
 class RiskQARequest(BaseModel):
@@ -24,6 +27,32 @@ class RiskQARequest(BaseModel):
         if not v or not v.strip():
             raise ValueError("Question cannot be empty or whitespace only")
         return v.strip()
+
+
+class InterventionCreateRequest(BaseModel):
+    action_description: str = Field(..., description="Description of the action taken by the merchant")
+    start_date: datetime = Field(..., description="Date when the intervention began")
+    target_segment: str = Field(..., description="Target segment for the intervention")
+    status: str = Field(..., description="Current status of the intervention")
+
+    @field_validator("action_description", "target_segment", "status")
+    @classmethod
+    def validate_non_empty_str(cls, v: str, info) -> str:
+        if not v or not v.strip():
+            raise ValueError(f"{info.field_name} cannot be empty or whitespace only")
+        return v.strip()
+
+
+class InterventionResponse(BaseModel):
+    id: int
+    merchant_id: int
+    action_description: str
+    start_date: datetime
+    target_segment: str
+    status: str
+
+    model_config = {"from_attributes": True}
+
 
 
 def get_db():
@@ -107,6 +136,58 @@ def ask_merchant_question_endpoint(
 
     qa_response = answer_risk_question(analytics_result, request.question)
     return qa_response
+
+
+@app.post(
+    "/merchants/{merchant_id}/interventions",
+    response_model=InterventionResponse,
+    status_code=201,
+)
+def create_merchant_intervention_endpoint(
+    merchant_id: int,
+    request: InterventionCreateRequest,
+    db: Session = Depends(get_db),
+):
+    """Record a merchant intervention action in the database."""
+    merchant = db.query(Merchant).filter(Merchant.id == merchant_id).first()
+    if merchant is None:
+        raise HTTPException(status_code=404, detail="Merchant not found")
+
+    intervention = Intervention(
+        merchant_id=merchant_id,
+        action_description=request.action_description,
+        start_date=request.start_date,
+        target_segment=request.target_segment,
+        status=request.status,
+    )
+    db.add(intervention)
+    db.commit()
+    db.refresh(intervention)
+
+    return intervention
+
+
+@app.get(
+    "/merchants/{merchant_id}/interventions",
+    response_model=List[InterventionResponse],
+)
+def get_merchant_interventions_endpoint(
+    merchant_id: int,
+    db: Session = Depends(get_db),
+):
+    """Retrieve all recorded interventions for a merchant ordered by start_date descending."""
+    merchant = db.query(Merchant).filter(Merchant.id == merchant_id).first()
+    if merchant is None:
+        raise HTTPException(status_code=404, detail="Merchant not found")
+
+    interventions = (
+        db.query(Intervention)
+        .filter(Intervention.merchant_id == merchant_id)
+        .order_by(Intervention.start_date.desc())
+        .all()
+    )
+    return interventions
+
 
 
 

@@ -346,6 +346,13 @@ export default function App() {
                     <span className="ai-explanation-label" style={{ color: '#c084fc' }}>Merchant Focus Area</span>
                     <p className="ai-explanation-text" style={{ fontWeight: 500 }}>{explanationData.focus_area}</p>
                   </div>
+
+                  {explanationData.recommended_action && (
+                    <div className="ai-explanation-box ai-recommended-box ai-explanation-full">
+                      <span className="ai-explanation-label" style={{ color: '#60a5fa' }}>Recommended Action</span>
+                      <p className="ai-explanation-text" style={{ fontWeight: 500 }}>{explanationData.recommended_action}</p>
+                    </div>
+                  )}
                 </div>
               )}
             </div>

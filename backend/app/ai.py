@@ -15,13 +15,16 @@ class RiskExplanationResponse(BaseModel):
         description="Factual explanation of monthly dispute rate trajectory and trend classification"
     )
     driver_explanation: str = Field(
-        description="Factual breakdown of strongest observed segment driver(s), including observed lift and excess disputes"
+        description="Factual breakdown of strongest observed segment driver(s), including observed lift, excess disputes, and dispute reason breakdown"
     )
     forecast_explanation: str = Field(
         description="Factual explanation of deterministic threshold forecast status, estimated crossing month, and uncertainty state"
     )
     focus_area: str = Field(
         description="Concise merchant-facing operational focus area directing the merchant to review the observed high-risk segment without inferring ungrounded operational causes like product quality or fulfillment failure"
+    )
+    recommended_action: str = Field(
+        description="Concise merchant-facing action recommendation strictly grounded in analytics facts, directing review/investigation of the observed high-risk segment and dominant dispute reason pattern without unsupported causal claims or operational assumptions."
     )
 
 class RiskQAResponse(BaseModel):
@@ -45,11 +48,14 @@ def _build_fallback_explanation(analytics_result: Dict[str, Any], reason: str) -
     thresh = merchant.get("risk_threshold", 0.02) * 100
     
     top_driver_str = "None detected"
+    dom_reason_str = ""
     if drivers:
         d0 = drivers[0]
         dims = " + ".join([f"{k}={v}" for k, v in d0.get("values", {}).items()])
         lift = d0.get("lift", 1.0)
         top_driver_str = f"{dims} (Observed Lift: {lift:.2f}x)"
+        if d0.get("dominant_dispute_reason"):
+            dom_reason_str = f", particularly the observed {d0.get('dominant_dispute_reason')} dispute pattern"
         
     crossing_str = forecast.get("estimated_crossing_month") or "N/A"
     status_str = forecast.get("status", "N/A")
@@ -60,7 +66,8 @@ def _build_fallback_explanation(analytics_result: Dict[str, Any], reason: str) -
         trend_explanation=f"Observed trend direction is classified as '{trend_dir}' across {trend.get('recent_month_count', 0)} cohort months based on linear regression fit.",
         driver_explanation=f"Strongest observed driver is {top_driver_str}.",
         forecast_explanation=f"Deterministic threshold forecast status is '{status_str}' with estimated crossing month '{crossing_str}'.",
-        focus_area=f"Review transactions involving observed high-risk segment {top_driver_str}."
+        focus_area=f"Review transactions involving observed high-risk segment {top_driver_str}.",
+        recommended_action=f"Prioritize review of transactions in observed high-risk segment {top_driver_str}{dom_reason_str}."
     )
 
 def generate_risk_explanation(
@@ -103,12 +110,14 @@ CRITICAL CONSTRAINTS:
 3. Do NOT calculate or recompute any metrics.
 4. Do NOT invent numbers, dates, causes, probabilities, or other unprovided facts.
 5. Do NOT make causal claims from observational segment data. Use terms like "strongest observed driver" or "associated segment" rather than "caused by" or "root cause".
-6. FOCUS_AREA STRICT RULE:
-   - Identify the observed high-risk segment driver(s) and point the merchant toward reviewing transactions in that segment.
-   - May reference supplied dispute reason(s) if explicitly present in the facts.
-   - Must NOT infer an operational cause that is not explicitly represented in the analytics facts.
-   - Must NOT introduce ungrounded assumptions or speculations such as "product quality", "fulfillment failure", "customer dissatisfaction", "fraud intent", or "payment failure" unless explicitly present in the supplied facts.
-   - Must NOT convert observational correlation/association into causation.
+6. FOCUS_AREA & RECOMMENDED_ACTION STRICT RULES:
+   - Identify the observed high-risk segment driver(s) (e.g. product category, delivery partner, subscription type, transaction type) and direct the merchant toward reviewing/investigating/monitoring transactions in that segment.
+   - May reference the observed dominant dispute reason and its percentage share if explicitly present in the facts (e.g., product_not_received, refund_not_processed).
+   - Direct the merchant on what area to REVIEW, INVESTIGATE, MONITOR, or PRIORITIZE.
+   - Must NOT claim that the segment or dispute reason is proven to cause the risk. Avoid unsupported causal phrases such as "caused by", "causing disputes", "root cause", or "because of".
+   - Must NOT infer or invent an operational cause/failure not explicitly represented in the analytics facts (such as "product quality is poor", "fulfillment process is failing", "customer dissatisfaction", "fraud intent", or "payment failure").
+   - Must NOT invent specific ungrounded solutions (such as changing vendors, disabling payment methods, changing prices, refunding customers).
+   - Prefer language such as "Review...", "Investigate...", "Prioritize review of...", "Monitor...", "Examine the observed dispute pattern in...".
 7. If the facts do not support a conclusion, state that the information is insufficient.
 8. Do NOT use external information or web searches.
 9. Do NOT make unsupported financial, legal, or operational guarantees.
@@ -119,9 +128,10 @@ STRUCTURED ANALYTICS FACTS:
 INSTRUCTIONS FOR YOUR RESPONSE FIELDS:
 - summary: High-level factual overview of current merchant dispute rate vs configured threshold.
 - trend_explanation: Factual explanation of the observed monthly dispute rate trajectory and trend direction.
-- driver_explanation: Factual breakdown of the strongest observed segment driver(s), including observed lift and excess disputes.
+- driver_explanation: Factual breakdown of the strongest observed segment driver(s), including observed lift, excess disputes, and dispute reason breakdown.
 - forecast_explanation: Factual explanation of the deterministic threshold forecast state, projected breach month (if applicable), and uncertainty state.
-- focus_area: Concise merchant-facing operational focus area directing the merchant to review the observed high-risk segment without making ungrounded causal or operational assumptions (such as product quality or fulfillment issues).
+- focus_area: Concise merchant-facing operational focus area directing the merchant to review the observed high-risk segment without making ungrounded causal or operational assumptions.
+- recommended_action: Concise merchant-facing action recommendation directing the merchant to review, investigate, or prioritize the observed high-risk segment and observed dominant dispute reason pattern without making unsupported causal claims or ungrounded operational assumptions.
 """
 
         response = client.models.generate_content(

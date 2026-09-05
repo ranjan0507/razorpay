@@ -429,6 +429,11 @@ body {
   border: 1px solid rgba(139, 92, 246, 0.4);
 }
 
+.ai-recommended-box {
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.15) 0%, rgba(14, 165, 233, 0.15) 100%);
+  border: 1px solid rgba(59, 130, 246, 0.4);
+}
+
 .ai-error-box {
   padding: 1rem 1.25rem;
   background: rgba(239, 68, 68, 0.1);

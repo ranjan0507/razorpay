@@ -45,134 +45,184 @@ def is_numerical_match(num_val: float, fact_nums: list) -> bool:
 
 def main():
     print("=" * 80)
-    print("DISPUTEGUARD GEMINI AI LAYER STRICT GROUNDING VERIFICATION TEST (MERCHANT 2)")
+    print("DISPUTEGUARD GEMINI AI LAYER STRICT GROUNDING VERIFICATION TEST (MERCHANTS 2 & 4)")
     print("=" * 80)
 
     db = SessionLocal()
     try:
-        # Step 1: Run deterministic analytics for Merchant 2
-        analytics_result = run_merchant_analytics(db, merchant_id=2)
+        # ----------------------------------------------------------------------
+        # PART 1: MERCHANT 2 VERIFICATION (Escalating E-commerce)
+        # ----------------------------------------------------------------------
+        print("\n" + "-" * 80)
+        print("PART 1: MERCHANT 2 (Escalating E-commerce)")
+        print("-" * 80)
+
+        analytics_result_m2 = run_merchant_analytics(db, merchant_id=2)
+        assert analytics_result_m2 is not None, "Failed to load Merchant 2 analytics"
         
-        print("\n[1] Deterministic Facts Loaded from Backend Pipeline:")
-        m = analytics_result["merchant"]
-        o = analytics_result["overall_metrics"]
-        t = analytics_result["trend"]
-        d = analytics_result["segment_drivers"][0]
-        f = analytics_result["forecast"]
+        print("\n[1] Generating explanation for Merchant 2...")
+        explanation_m2 = generate_risk_explanation(analytics_result_m2)
+        exp_dict_m2 = explanation_m2.model_dump()
 
-        print(f"  Merchant Profile  : #{m['id']} - {m['name']} ({m['type']})")
-        print(f"  Current Rate      : {o['current_dispute_rate']*100:.3f}% ({o['current_dispute_rate']})")
-        print(f"  Risk Threshold    : {m['risk_threshold']*100:.3f}% ({m['risk_threshold']})")
-        print(f"  Trend Direction   : {t.get('trend_direction', 'neutral')} (slope: {t.get('slope', 0):.6f})")
-        print(f"  Top Driver        : {' + '.join([f'{k}={v}' for k, v in d['values'].items()])}")
-        print(f"  Observed Lift     : {d['lift']:.2f}x ({d['lift']})")
-        print(f"  Forecast Crossing : {f['estimated_crossing_month']} (status: {f['status']})")
-
-        # Step 2: Generate explanation using Gemini API
-        print("\n[2] Calling generate_risk_explanation(analytics_result)...")
-        explanation = generate_risk_explanation(analytics_result)
-        exp_dict = explanation.model_dump()
-
-        print("\n[3] Generated Structured Pydantic Explanation:")
+        print("\n[2] Generated Merchant 2 Structured Pydantic Explanation:")
         print("-" * 60)
-        print(json.dumps(exp_dict, indent=2))
+        print(json.dumps(exp_dict_m2, indent=2))
         print("-" * 60)
 
-        # Step 3: Strict Grounding Fact Verification
-        print("\n[4] Strict Evidence-Based Grounding Verification:")
-        
-        full_text = " ".join([
-            explanation.summary,
-            explanation.trend_explanation,
-            explanation.driver_explanation,
-            explanation.forecast_explanation,
-            explanation.focus_area
+        print(f"\n[3] Merchant 2 recommended_action Output:\n  \"{explanation_m2.recommended_action}\"")
+
+        # Grounding & evidence checks for Merchant 2
+        full_text_m2 = " ".join([
+            explanation_m2.summary,
+            explanation_m2.trend_explanation,
+            explanation_m2.driver_explanation,
+            explanation_m2.forecast_explanation,
+            explanation_m2.focus_area,
+            explanation_m2.recommended_action
         ])
-        full_text_lower = full_text.lower()
+        full_text_lower_m2 = full_text_m2.lower()
+        rec_act_lower_m2 = explanation_m2.recommended_action.lower()
 
-        # Define strict evidence rules
-        grounding_rules = [
+        grounding_rules_m2 = [
             (
                 "Current Dispute Rate (~1.965% or 0.01965)",
-                any(v in full_text for v in ["1.965", "1.97", "1.96%", "0.0196", "0.01965", "0.019647", "0.019648"])
+                any(v in full_text_m2 for v in ["1.965", "1.97", "1.96%", "0.0196", "0.01965", "0.019647", "0.019648"])
             ),
             (
                 "Risk Threshold (~2.000% or 0.02)",
-                any(v in full_text for v in ["2.000", "2.0%", "2%", "0.02", "0.020"])
+                any(v in full_text_m2 for v in ["2.000", "2.0%", "2%", "0.02", "0.020"])
             ),
             (
                 "Observed Lift (~6.76x)",
-                any(v in full_text for v in ["6.76", "6.759", "6.8", "6.76x", "6.759337"])
+                any(v in full_text_m2 for v in ["6.76", "6.759", "6.8", "6.76x", "6.759337"])
             ),
             (
                 "Projected Crossing Month (September 2026 / 2026-09)",
-                any(v in full_text_lower for v in ["2026-09", "september 2026", "sept 2026"])
+                any(v in full_text_lower_m2 for v in ["2026-09", "september 2026", "sept 2026"])
             ),
             (
                 "Upward Trend Classification",
-                any(v in full_text_lower for v in ["upward", "escalating", "increasing"])
+                any(v in full_text_lower_m2 for v in ["upward", "escalating", "increasing"])
             ),
             (
                 "Categorical Segment: Electronics",
-                "electronics" in full_text_lower
+                "electronics" in full_text_lower_m2
             ),
             (
                 "Categorical Segment: Delivery Partner C",
-                ("partner_c" in full_text_lower or "partner c" in full_text_lower)
+                ("partner_c" in full_text_lower_m2 or "partner c" in full_text_lower_m2)
             ),
+            (
+                "Recommended Action References Electronics",
+                "electronics" in rec_act_lower_m2
+            ),
+            (
+                "Recommended Action References Partner_C",
+                ("partner_c" in rec_act_lower_m2 or "partner c" in rec_act_lower_m2)
+            ),
+            (
+                "Recommended Action Has No Unsupported Causal Phrases",
+                not any(w in rec_act_lower_m2 for w in ["caused by", "causing disputes", "root cause"])
+            ),
+            (
+                "Recommended Action Has No Unsupported Operational Assumptions",
+                not any(w in rec_act_lower_m2 for w in ["product quality", "fulfillment failure", "fulfillment process is failing", "customers are unhappy"])
+            )
         ]
 
-        strict_passed = True
-        for rule_name, passed in grounding_rules:
+        strict_passed_m2 = True
+        print("\n[4] Strict Evidence-Based Grounding Verification (Merchant 2):")
+        for rule_name, passed in grounding_rules_m2:
             status = "PASS" if passed else "FAIL"
             if not passed:
-                strict_passed = False
-            print(f"  [{status}] Grounded fact evidence verified: {rule_name}")
+                strict_passed_m2 = False
+            print(f"  [{status}] {rule_name}")
 
-        # Step 4: Anti-Hallucination Claim Scan
-        print("\n[5] Anti-Hallucination Claim Scan:")
-        
+        # Anti-Hallucination Claim Scan M2
+        print("\n[5] Anti-Hallucination Claim Scan (Merchant 2):")
         valid_date_patterns = [
             "2026-03", "2026-04", "2026-05", "2026-06", "2026-07", "2026-08", "2026-09",
             "march 2026", "april 2026", "may 2026", "june 2026", "july 2026", "august 2026", "september 2026"
         ]
 
-        dates_in_text = re.findall(r'\b20\d{2}-\d{2}\b|\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+20\d{2}\b', full_text_lower)
+        dates_in_text = re.findall(r'\b20\d{2}-\d{2}\b|\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+20\d{2}\b', full_text_lower_m2)
         unsupported_dates = [d for d in dates_in_text if d not in valid_date_patterns]
 
-        # Extract all numbers from M2 analytics facts
-        fact_numbers = extract_all_numbers(analytics_result)
+        fact_numbers_m2 = extract_all_numbers(analytics_result_m2)
+        extracted_num_strings_m2 = re.findall(r'\b\d+\.\d+%?\b|\b\d+%\b', full_text_m2)
+        unsupported_numbers_m2 = []
 
-        # Find numbers in generated explanation
-        extracted_num_strings = re.findall(r'\b\d+\.\d+%?\b|\b\d+%\b', full_text)
-        unsupported_numbers = []
-
-        for num_str in extracted_num_strings:
+        for num_str in extracted_num_strings_m2:
             clean_str = num_str.rstrip('%').rstrip('x')
             try:
                 num_val = float(clean_str)
-                if not is_numerical_match(num_val, fact_numbers):
-                    unsupported_numbers.append(num_str)
+                if not is_numerical_match(num_val, fact_numbers_m2):
+                    unsupported_numbers_m2.append(num_str)
             except ValueError:
                 pass
 
-        anti_hallucination_passed = (len(unsupported_dates) == 0 and len(unsupported_numbers) == 0)
+        anti_hallucination_passed_m2 = (len(unsupported_dates) == 0 and len(unsupported_numbers_m2) == 0)
+        print(f"  [{'PASS' if anti_hallucination_passed_m2 else 'FAIL'}] M2 dates and numbers match facts.")
 
-        if len(unsupported_dates) > 0:
-            print(f"  [FAIL] Unsupported date(s) detected: {unsupported_dates}")
-        else:
-            print("  [PASS] No unsupported dates detected in generated output.")
+        # ----------------------------------------------------------------------
+        # PART 2: MERCHANT 4 VERIFICATION (Escalating Subscription)
+        # ----------------------------------------------------------------------
+        print("\n" + "-" * 80)
+        print("PART 2: MERCHANT 4 (Escalating Subscription)")
+        print("-" * 80)
 
-        if len(unsupported_numbers) > 0:
-            print(f"  [FAIL] Unsupported number(s) detected: {unsupported_numbers}")
-        else:
-            print("  [PASS] All extracted numerical values match supplied analytics facts.")
+        analytics_result_m4 = run_merchant_analytics(db, merchant_id=4)
+        assert analytics_result_m4 is not None, "Failed to load Merchant 4 analytics"
 
+        print("\n[1] Generating explanation for Merchant 4...")
+        explanation_m4 = generate_risk_explanation(analytics_result_m4)
+        exp_dict_m4 = explanation_m4.model_dump()
+
+        print("\n[2] Generated Merchant 4 Structured Pydantic Explanation:")
+        print("-" * 60)
+        print(json.dumps(exp_dict_m4, indent=2))
+        print("-" * 60)
+
+        print(f"\n[3] Merchant 4 recommended_action Output:\n  \"{explanation_m4.recommended_action}\"")
+
+        rec_act_lower_m4 = explanation_m4.recommended_action.lower()
+
+        grounding_rules_m4 = [
+            (
+                "Recommended Action References Annual Subscription",
+                "annual" in rec_act_lower_m4
+            ),
+            (
+                "Recommended Action References Renewal Transaction Type",
+                ("renewal" in rec_act_lower_m4 or "renewals" in rec_act_lower_m4)
+            ),
+            (
+                "Recommended Action References Observed Refund-Not-Processed Pattern",
+                ("refund_not_processed" in rec_act_lower_m4 or "refund" in rec_act_lower_m4)
+            ),
+            (
+                "Recommended Action Has No Unsupported Causal Phrases",
+                not any(w in rec_act_lower_m4 for w in ["caused by", "causing disputes", "root cause"])
+            )
+        ]
+
+        strict_passed_m4 = True
+        print("\n[4] Strict Evidence-Based Grounding Verification (Merchant 4):")
+        for rule_name, passed in grounding_rules_m4:
+            status = "PASS" if passed else "FAIL"
+            if not passed:
+                strict_passed_m4 = False
+            print(f"  [{status}] {rule_name}")
+
+        # ----------------------------------------------------------------------
+        # OVERALL VERIFICATION SUMMARY
+        # ----------------------------------------------------------------------
         print("\n" + "=" * 80)
-        if strict_passed and anti_hallucination_passed:
-            print("SUCCESS: Gemini AI layer passed strict grounding & anti-hallucination verification!")
+        all_ok = strict_passed_m2 and anti_hallucination_passed_m2 and strict_passed_m4
+        if all_ok:
+            print("SUCCESS: ALL GEMINI EXPLANATION GROUNDING & RECOMMENDATION TESTS PASSED!")
         else:
-            print("FAILURE: Grounding or anti-hallucination verification checks failed.")
+            print("FAILURE: ONE OR MORE GROUNDING CHECKS FAILED.")
         print("=" * 80 + "\n")
 
     finally:

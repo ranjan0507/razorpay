@@ -1,4 +1,5 @@
 import itertools
+import json
 import math
 from typing import Any, Dict, List, Optional
 from sqlalchemy import func
@@ -202,6 +203,8 @@ def analyze_segment_drivers(db: Session, merchant_id: int) -> Dict[str, Any]:
     the strongest observed drivers of a merchant's dispute volume (Step 4C).
     Strictly counts unique transactions and unique disputed transactions per segment.
     Filters out segments with non-positive excess disputes (excess_disputes <= 0).
+    Enriches qualifying drivers with dispute_reason_breakdown, dominant_dispute_reason,
+    and dominant_dispute_reason_share.
     """
     # 1. Fetch all distinct transactions for merchant_id
     transactions = (
@@ -230,15 +233,23 @@ def analyze_segment_drivers(db: Session, merchant_id: int) -> Dict[str, Any]:
             "drivers": [],
         }
 
-    # 2. Fetch set of distinct disputed transaction IDs for this merchant
-    disputed_tx_ids = (
-        db.query(Dispute.transaction_id)
+    # 2. Fetch distinct disputes and dispute reasons for this merchant
+    disputed_rows = (
+        db.query(Dispute.transaction_id, Dispute.dispute_reason)
         .join(Transaction, Dispute.transaction_id == Transaction.id)
         .filter(Transaction.merchant_id == merchant_id)
-        .distinct()
         .all()
     )
-    disputed_tx_set = {row[0] for row in disputed_tx_ids if row[0] is not None}
+
+    disputed_tx_reasons: Dict[int, List[str]] = {}
+    for tx_id, reason in disputed_rows:
+        if tx_id is not None:
+            if tx_id not in disputed_tx_reasons:
+                disputed_tx_reasons[tx_id] = []
+            if reason:
+                disputed_tx_reasons[tx_id].append(reason)
+
+    disputed_tx_set = set(disputed_tx_reasons.keys())
 
     # 3. Distinct dispute count and baseline rate
     total_disputes = sum(1 for tx in transactions if tx.id in disputed_tx_set)
@@ -270,12 +281,13 @@ def analyze_segment_drivers(db: Session, merchant_id: int) -> Dict[str, Any]:
 
     drivers = []
 
-    # 6. Aggregate unique counts across candidate segments
+    # 6. Aggregate unique counts and dispute reasons across candidate segments
     for dim_set in dimension_combinations:
         dim_names = [d[0] for d in dim_set]
         dim_indices = [d[1] for d in dim_set]
 
-        segment_counts: Dict[tuple, list] = {}  # val_tuple -> [tx_count, disp_count]
+        # val_tuple -> {"tx_count": int, "disp_count": int, "reasons": Dict[str, int]}
+        segment_counts: Dict[tuple, Dict[str, Any]] = {}
 
         for tx in transactions:
             vals = tuple(tx[idx] for idx in dim_indices)
@@ -283,13 +295,19 @@ def analyze_segment_drivers(db: Session, merchant_id: int) -> Dict[str, Any]:
                 continue
 
             if vals not in segment_counts:
-                segment_counts[vals] = [0, 0]
+                segment_counts[vals] = {"tx_count": 0, "disp_count": 0, "reasons": {}}
 
-            segment_counts[vals][0] += 1
+            segment_counts[vals]["tx_count"] += 1
             if tx.id in disputed_tx_set:
-                segment_counts[vals][1] += 1
+                segment_counts[vals]["disp_count"] += 1
+                for r in disputed_tx_reasons.get(tx.id, []):
+                    segment_counts[vals]["reasons"][r] = segment_counts[vals]["reasons"].get(r, 0) + 1
 
-        for val_tuple, (tx_count, disp_count) in segment_counts.items():
+        for val_tuple, info in segment_counts.items():
+            tx_count = info["tx_count"]
+            disp_count = info["disp_count"]
+            reasons_dict = info["reasons"]
+
             if tx_count < minimum_transactions:
                 continue
 
@@ -303,6 +321,18 @@ def analyze_segment_drivers(db: Session, merchant_id: int) -> Dict[str, Any]:
             lift = (segment_dispute_rate / baseline_rate) if baseline_rate > 0 else 0.0
             values_dict = {dim_names[i]: val_tuple[i] for i in range(len(dim_names))}
 
+            # Sort dispute reason breakdown by count descending, then alphabetically
+            sorted_reasons = dict(sorted(reasons_dict.items(), key=lambda item: (-item[1], item[0])))
+
+            total_segment_reasons = sum(sorted_reasons.values())
+            if sorted_reasons and total_segment_reasons > 0:
+                dominant_reason = next(iter(sorted_reasons))
+                dominant_count = sorted_reasons[dominant_reason]
+                dominant_share = dominant_count / total_segment_reasons
+            else:
+                dominant_reason = None
+                dominant_share = 0.0
+
             drivers.append({
                 "dimensions": dim_names,
                 "values": values_dict,
@@ -312,6 +342,9 @@ def analyze_segment_drivers(db: Session, merchant_id: int) -> Dict[str, Any]:
                 "baseline_rate": baseline_rate,
                 "lift": lift,
                 "excess_disputes": excess_disputes,
+                "dispute_reason_breakdown": sorted_reasons,
+                "dominant_dispute_reason": dominant_reason,
+                "dominant_dispute_reason_share": dominant_share,
             })
 
     # 7. Rank drivers primarily by descending excess_disputes, secondarily by lift
@@ -644,11 +677,24 @@ def run_analytics_verification():
             fc = res["forecast"]
 
             top_driver_str = "None"
+            breakdown_str = "None"
+            dom_reason_str = "None"
+            dom_share_str = "None"
+
             if drivers:
                 d = drivers[0]
                 dims = " + ".join(d["dimensions"])
                 vals = ", ".join(f"{k}={v}" for k, v in d["values"].items())
-                top_driver_str = f"[{dims}] -> ({vals}) (lift: {d['lift']:.2f}x)"
+                top_driver_str = (
+                    f"[{dims}] -> ({vals})\n"
+                    f"                            Dispute Rate: {d['dispute_rate']*100:.2f}%, "
+                    f"Lift: {d['lift']:.2f}x, Excess Disputes: {d['excess_disputes']:.2f}, "
+                    f"Tx: {d['transaction_count']}, Disputes: {d['dispute_count']}"
+                )
+                breakdown_str = json.dumps(d.get("dispute_reason_breakdown", {}))
+                dom_reason_str = str(d.get("dominant_dispute_reason"))
+                dom_share = d.get("dominant_dispute_reason_share", 0.0)
+                dom_share_str = f"{dom_share * 100:.2f}% ({dom_share:.4f})"
 
             crossing_info = "N/A"
             if fc["status"] == "projected_breach":
@@ -665,6 +711,9 @@ def run_analytics_verification():
             print(f"  Trend Direction           : {tr['trend_direction'].upper()}")
             print(f"  Monthly OLS Slope (b)     : {tr['slope'] * 100:.4f}% / month")
             print(f"  Top Segment Driver        : {top_driver_str}")
+            print(f"  Dispute Reason Breakdown  : {breakdown_str}")
+            print(f"  Dominant Dispute Reason   : {dom_reason_str}")
+            print(f"  Dominant Reason Share     : {dom_share_str}")
             print(f"  Final Risk Score (0-100)  : {ra['risk_score']:.2f} / 100.0")
             print(f"  Forecast Status           : {fc['status'].upper()}")
             print(f"  Forecast Crossing Info    : {crossing_info}")
@@ -683,3 +732,4 @@ def run_analytics_verification():
 
 if __name__ == "__main__":
     run_analytics_verification()
+
