@@ -199,10 +199,10 @@ export default function App() {
     setQaError(null);
   }, [selectedMerchantId]);
 
-  // Helper to format dispute rates as standard percentage strings (e.g. 0.835%)
+  // Helper to format dispute rates as standard percentage strings (e.g. 1.97%)
   const formatPercent = (val) => {
-    if (val === undefined || val === null) return '0.000%';
-    return `${(val * 100).toFixed(3)}%`;
+    if (val === undefined || val === null) return '0.00%';
+    return `${(val * 100).toFixed(2)}%`;
   };
 
   // Map backend monthly_metrics into percentage data points for recharts
