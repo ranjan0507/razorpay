@@ -58,6 +58,7 @@ export default function App() {
   const [evaluationData, setEvaluationData] = useState(null);
   const [evaluationLoading, setEvaluationLoading] = useState(false);
   const [evaluationError, setEvaluationError] = useState(null);
+  const [interventionAction, setInterventionAction] = useState(null);
 
   const [interventionExplanationData, setInterventionExplanationData] = useState(null);
   const [interventionExplanationLoading, setInterventionExplanationLoading] = useState(false);
@@ -101,6 +102,7 @@ export default function App() {
     setEvaluationLoading(true);
     setEvaluationError(null);
     setEvaluationData(null);
+    setInterventionAction(null);
 
     setInterventionExplanationLoading(false);
     setInterventionExplanationError(null);
@@ -118,6 +120,7 @@ export default function App() {
         return;
       }
 
+      setInterventionAction(interventions[0].action_description || null);
       const targetInterventionId = interventions[0].id;
 
       // 1. Fetch deterministic evaluation
@@ -567,6 +570,9 @@ export default function App() {
                           {evaluationData.comparison?.evaluation_status === 'no_material_change' && 'No Material Change'}
                           {evaluationData.comparison?.evaluation_status === 'insufficient_data' && 'Insufficient Data'}
                         </span>
+                        <span className="type-pill" style={{ background: 'rgba(139, 92, 246, 0.1)', color: '#c084fc' }}>
+                          Evaluating intervention target: {evaluationData.target_segment}
+                        </span>
                         <span className="type-pill">
                           Data Sufficient: {evaluationData.comparison?.is_sufficient_data ? 'yes' : 'no'}
                         </span>
@@ -575,6 +581,17 @@ export default function App() {
                         Target Segment: <strong style={{ color: 'var(--text-primary)' }}>{evaluationData.target_segment}</strong>
                       </div>
                     </div>
+
+                    {interventionAction && (
+                      <div style={{ marginBottom: '1.25rem', padding: '0.75rem 1rem', background: 'rgba(30, 41, 59, 0.6)', borderRadius: '0.5rem', border: '1px solid var(--border-color)' }}>
+                        <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                          Action Recorded:
+                        </span>
+                        <p style={{ fontSize: '0.95rem', fontWeight: 500, color: 'var(--text-primary)', marginTop: '0.25rem' }}>
+                          "{interventionAction}"
+                        </p>
+                      </div>
+                    )}
 
                     <div className="forecast-grid">
                       <div className="forecast-metric-item">
@@ -834,6 +851,15 @@ export default function App() {
                               {driver.transaction_count.toLocaleString()}
                             </span>
                           </div>
+
+                          {driver.dominant_dispute_reason && (
+                            <div className="driver-metric-item">
+                              <span className="driver-metric-label">Dominant Reason</span>
+                              <span className="driver-metric-val" style={{ fontSize: '0.9rem', color: '#60a5fa' }}>
+                                {driver.dominant_dispute_reason}
+                              </span>
+                            </div>
+                          )}
                         </div>
                       </div>
                     );
